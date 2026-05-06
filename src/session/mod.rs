@@ -487,7 +487,7 @@ mod tests {
             batch_ids(&batch),
             vec![
                 ids::PACKET_ID_KEEPALIVE.to_string(),
-                ids::PACKET_ID_SI.to_string(),
+                ids::PACKET_ID_ST.to_string(),
             ]
         );
     }

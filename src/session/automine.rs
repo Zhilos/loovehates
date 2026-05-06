@@ -43,43 +43,23 @@ pub fn find_best_bot_target(
     let mut best_target: Option<(crate::models::BotTarget, u32)> = None;
 
     // Collectibles (items on the floor) and gemstones (blocks in walls) are
-    // ranked equally — nearest reachable target wins.
-    //
-    // Items rest ON TOP of the floor tile, so the stored map_y is the SOLID
-    // floor. The bot needs to stand in the air tile ABOVE (map_y - 1) to be
-    // close enough for the server's C proximity check. Aim there if it's
-    // walkable; fall back to the raw position otherwise.
+    // ranked equally — nearest reachable target wins. The crosshair shows
+    // the collectable's actual position; pathfinding to it is handled by
+    // the loop, which already walks to whatever adjacent walkable tile
+    // gets it within the auto-collect radius.
     for (&id, state) in collectables {
         if cooldowns.is_on_cooldown(id) {
             continue;
         }
 
-        // Choose the approach tile: prefer one tile above (air), fall back
-        // to raw map position if the above tile is also solid / out of bounds.
-        let approach_x = state.map_x;
-        let approach_y = {
-            let above = state.map_y - 1;
-            if above >= 0 {
-                let idx = (above as u32 * world_width + state.map_x as u32) as usize;
-                let tile = foreground_tiles.get(idx).copied().unwrap_or(0);
-                if crate::pathfinding::astar::is_walkable_tile(tile) {
-                    above
-                } else {
-                    state.map_y
-                }
-            } else {
-                state.map_y
-            }
-        };
-
-        let dx = approach_x - player_map_x;
-        let dy = approach_y - player_map_y;
+        let dx = state.map_x - player_map_x;
+        let dy = state.map_y - player_map_y;
         let dist_sq = (dx * dx + dy * dy) as u32;
 
         let mut near_enemy = false;
         for enemy in ai_enemies.values() {
-            let e_dx = approach_x - enemy.map_x;
-            let e_dy = approach_y - enemy.map_y;
+            let e_dx = state.map_x - enemy.map_x;
+            let e_dy = state.map_y - enemy.map_y;
             if (e_dx * e_dx + e_dy * e_dy) < (3 * 3) {
                 near_enemy = true;
                 break;
@@ -94,8 +74,8 @@ pub fn find_best_bot_target(
                 crate::models::BotTarget::Collecting {
                     id,
                     block_id: state.block_type as u16,
-                    x: approach_x,
-                    y: approach_y,
+                    x: state.map_x,
+                    y: state.map_y,
                 },
                 dist_sq,
             ));
@@ -519,13 +499,44 @@ pub(crate) async fn run_automine_loop(
                     );
                     
                     if let Some(t) = best {
-                        let (tx, ty) = match t {
-                            BotTarget::Mining { x, y } => (x, y),
-                            BotTarget::Collecting { x, y, .. } => (x, y),
-                            _ => (0, 0),
+                        let (tx, ty, is_col) = match t {
+                            BotTarget::Mining { x, y } => (x, y, false),
+                            BotTarget::Collecting { x, y, .. } => (x, y, true),
+                            _ => (0, 0, false),
                         };
-                        if let Some(path) = get_path_to_target(player_x, player_y, tx, ty, &masked_foreground, world_width, world_height) {
-                            target = Some((t, path));
+
+                        // For collectables, the stored map tile is the floor
+                        // the item sits on (solid). Pathfind to the nearest
+                        // walkable neighbor that brings us within the auto-
+                        // collect radius (chebyshev ≤ 2). Try the tile itself
+                        // first; if pathing fails (it's solid), try the air
+                        // tile directly above and the four cardinal neighbors.
+                        let pathfind_targets: Vec<(i32, i32)> = if is_col {
+                            vec![
+                                (tx, ty),
+                                (tx, ty - 1),
+                                (tx - 1, ty),
+                                (tx + 1, ty),
+                                (tx, ty + 1),
+                            ]
+                        } else {
+                            vec![(tx, ty)]
+                        };
+
+                        for (px_t, py_t) in pathfind_targets {
+                            if px_t < 0 || py_t < 0
+                                || px_t as u32 >= world_width
+                                || py_t as u32 >= world_height
+                            {
+                                continue;
+                            }
+                            if let Some(path) = get_path_to_target(
+                                player_x, player_y, px_t, py_t,
+                                &masked_foreground, world_width, world_height,
+                            ) {
+                                target = Some((t, path));
+                                break;
+                            }
                         }
                     }
                 }

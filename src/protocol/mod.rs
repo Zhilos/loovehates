@@ -198,10 +198,13 @@ pub fn make_gpd(jwt: &str) -> Document {
     }
 }
 
-/// Client → server sync response. The server sends "ST", we reply with "SI".
+/// Outbound time-sync from client to server. Real-client capture shows
+/// `{ID: "ST", T: <C# ticks>}` — we use the same shape. (The `"SI"` ID
+/// experiment was incorrect: server's outbound ST has STime/SSlp fields,
+/// but the *outbound* sync uses the same "ST" ID with just T.)
 pub fn make_st() -> Document {
     doc! {
-        "ID": ids::PACKET_ID_SI,
+        "ID": ids::PACKET_ID_ST,
         "T": csharp_ticks(),
     }
 }
@@ -388,20 +391,14 @@ pub fn make_mine_hit_stationary(
 ) -> Vec<Document> {
     let (world_x, world_y) = map_to_world(player_x as f64, player_y as f64);
     vec![
-        // Use IDLE instead of HIT to bypass anim/physics check.
+        // Use IDLE to keep the anim/physics check happy (we are stationary).
         make_movement_packet(world_x, world_y, movement::ANIM_IDLE, direction, false),
-        // Open the position-ack sandwich at the player's tile so the server
-        // sees "I am physically here" before the hits.
-        make_portal_arrive_on(player_x, player_y),
-        make_portal_arrive_in(player_x, player_y),
-        // Triple hit
+        // Triple hit. PAoP/PAiP are intentionally NOT included — the server's
+        // mining handler does not expect them in the action bundle and adding
+        // them triggers KErr (verified by user smoke test).
         make_hit_block(hit_x, hit_y),
         make_hit_block(hit_x, hit_y),
         make_hit_block(hit_x, hit_y),
-        // Close the sandwich so the server tags the action with our location.
-        // Without this the server treats the HBs as disembodied → ER=7.
-        make_portal_arrive_on(player_x, player_y),
-        make_portal_arrive_in(player_x, player_y),
         // Sync
         make_st(),
     ]
@@ -435,20 +432,15 @@ pub fn make_mine_hit_portal_sandwich(
 pub fn make_move_to_map_point(player_x: i32, player_y: i32, map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
     let (old_world_x, old_world_y) = map_to_world(player_x as f64, player_y as f64);
     let (new_world_x, new_world_y) = map_to_world(map_x as f64, map_y as f64);
-    let _ = (old_world_x, old_world_y);
     vec![
-        // 1. Map-point intent to the destination tile.
+        // 1. Settle at current position with IDLE animation.
+        make_movement_packet(old_world_x, old_world_y, movement::ANIM_IDLE, direction, false),
+        // 2. State intent to move to new map point.
         make_map_point(map_x, map_y),
-        // 2. Movement update with the requested animation at the new world coords.
+        // 3. Complete the movement with the requested animation at destination.
         make_movement_packet(new_world_x, new_world_y, anim, direction, false),
-        // 3. Two pairs of position acks at the destination tile. Per real-client
-        //    capture (path_debug.log), every walking step ends with mP + PAoP×2 +
-        //    PAiP×2. Without these the server treats the move as a teleport
-        //    (KErr ER=7).
-        make_portal_arrive_on(map_x, map_y),
-        make_portal_arrive_in(map_x, map_y),
-        make_portal_arrive_on(map_x, map_y),
-        make_portal_arrive_in(map_x, map_y),
+        // 4. Sync clock.
+        make_st(),
     ]
 }
 
@@ -837,7 +829,7 @@ mod tests {
             .iter()
             .map(|doc| doc.get_str("ID").unwrap().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["ULS", "cZL", "cZva", "rOP", "rAIp", "rAI", "SI"]);
+        assert_eq!(ids, vec!["ULS", "cZL", "cZva", "rOP", "rAIp", "rAI", "ST"]);
         assert_eq!(batch[0].get_str("LS").unwrap(), "TUTORIAL2");
         assert!((batch[2].get_f64("Amt").unwrap() - 0.40).abs() < f64::EPSILON);
     }
@@ -849,6 +841,6 @@ mod tests {
             .iter()
             .map(|doc| doc.get_str("ID").unwrap().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["RtP", "SI"]);
+        assert_eq!(ids, vec!["RtP", "ST"]);
     }
 }
