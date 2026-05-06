@@ -530,7 +530,7 @@ pub(super) async fn planned_path(
     let height = world.height as usize;
     let tiles = &state.world_foreground_tiles;
 
-    astar::find_path(width, height, start, goal, |x, y| {
+    astar::find_path(width, height, start, goal, |x, y, _from_x, _from_y| {
         if is_walkable_map_position(tiles, width, height, start, goal, x, y) {
             Some(1)
         } else {

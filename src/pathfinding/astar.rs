@@ -37,7 +37,7 @@ pub fn find_path<F>(
     mut get_cost: F,
 ) -> Option<Vec<(i32, i32)>>
 where
-    F: FnMut(i32, i32) -> Option<u32>,
+    F: FnMut(i32, i32, i32, i32) -> Option<u32>,
 {
     if !in_bounds(width, height, start) || !in_bounds(width, height, goal) {
         return None;
@@ -45,7 +45,7 @@ where
     if start == goal {
         return Some(vec![start]);
     }
-    if get_cost(start.0, start.1).is_none() || get_cost(goal.0, goal.1).is_none() {
+    if get_cost(start.0, start.1, start.0, start.1).is_none() || get_cost(goal.0, goal.1, goal.0, goal.1).is_none() {
         return None;
     }
 
@@ -74,7 +74,7 @@ where
         }
 
         for neighbor in neighbors(width, height, current.position) {
-            let Some(cost) = get_cost(neighbor.0, neighbor.1) else {
+            let Some(cost) = get_cost(neighbor.0, neighbor.1, current.position.0, current.position.1) else {
                 continue;
             };
 
@@ -104,18 +104,15 @@ pub fn find_tile_path(
     start: (i32, i32),
     goal: (i32, i32),
 ) -> Option<Vec<(i32, i32)>> {
-    find_path(width, height, start, goal, |x, y| {
+    find_path(width, height, start, goal, |x, y, _from_x, _from_y| {
         let tile = tile_at(tiles, width, height, x, y)?;
         let mut cost = get_tile_cost(tile)?;
         
         // Gravity Penalty: If we are in air, check if there is ground below us.
-        // If not, horizontal movement should be much more "expensive" to
-        // encourage the bot to fall to a solid surface before walking.
+        // This allows flying but prefers staying on the ground.
         if is_walkable_tile(tile) {
             let below = tile_at(tiles, width, height, x, y + 1).unwrap_or(0);
             if is_walkable_tile(below) {
-                // We are floating! Add a massive penalty to horizontal movement
-                // to force the pathfinder to look for a way down.
                 cost += 50;
             }
         }
@@ -236,7 +233,7 @@ mod tests {
 
     #[test]
     fn finds_path_on_open_grid() {
-        let path = find_path(5, 5, (0, 0), (2, 2), |_, _| Some(1)).unwrap();
+        let path = find_path(5, 5, (0, 0), (2, 2), |_, _, _, _| Some(1)).unwrap();
         assert_eq!(path.first().copied(), Some((0, 0)));
         assert_eq!(path.last().copied(), Some((2, 2)));
         assert_eq!(path.len(), 5);
@@ -244,7 +241,7 @@ mod tests {
 
     #[test]
     fn avoids_blocked_tiles() {
-        let path = find_path(5, 5, (0, 0), (4, 0), |x, y| {
+        let path = find_path(5, 5, (0, 0), (4, 0), |x, y, _, _| {
             if matches!((x, y), (1, 0) | (2, 0) | (3, 0)) { None } else { Some(1) }
         })
         .unwrap();
@@ -254,7 +251,7 @@ mod tests {
 
     #[test]
     fn returns_none_when_goal_is_blocked() {
-        let path = find_path(3, 3, (0, 0), (2, 2), |x, y| if (x, y) == (2, 2) { None } else { Some(1) });
+        let path = find_path(3, 3, (0, 0), (2, 2), |x, y, _, _| if (x, y) == (2, 2) { None } else { Some(1) });
         assert!(path.is_none());
     }
 

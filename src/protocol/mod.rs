@@ -427,12 +427,12 @@ pub fn make_mine_hit_portal_sandwich(
 }
 
 pub fn make_move_to_map_point(player_x: i32, player_y: i32, map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
-    let _ = (player_x, player_y);
-    let (world_x, world_y) = map_to_world(map_x as f64, map_y as f64);
+    let (from_wx, from_wy) = map_to_world(player_x as f64, player_y as f64);
+    let (to_wx, to_wy) = map_to_world(map_x as f64, map_y as f64);
     vec![
-        make_movement_packet(world_x, world_y, movement::ANIM_IDLE, direction, false),
+        make_movement_packet(from_wx, from_wy, movement::ANIM_IDLE, direction, false),
         make_map_point(map_x, map_y),
-        make_movement_packet(world_x, world_y, anim, direction, false),
+        make_movement_packet(to_wx, to_wy, anim, direction, false),
     ]
 }
 
