@@ -9,20 +9,18 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use bson::Document;
-use serde_json::Value;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 
 use crate::constants::tutorial as tutorial_consts;
 use crate::logging::Logger;
 use crate::models::{
-    AiEnemySnapshot, InventoryItem, LuaCollectableSnapshot, LuaTileSnapshot, MinimapSnapshot,
-    RemotePlayerSnapshot, ServerEvent, SessionSnapshot, TileCount, WorldSnapshot,
+    InventoryItem, LuaTileSnapshot, SessionSnapshot, TileCount, WorldSnapshot,
 };
 use crate::protocol;
 
 use super::movement::walk_to_map_cancellable;
-use super::network::{ensure_not_cancelled, send_doc, send_docs};
+use super::network::{ensure_not_cancelled, send_docs};
 use super::state::{
     InventoryEntry, NamedInventoryEntry, OutboundHandle, SessionState,
 };

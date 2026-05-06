@@ -1,36 +1,9 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
-use std::sync::{
-    Arc, OnceLock,
-    atomic::{AtomicU64, Ordering},
-};
-
-use std::io::Cursor;
-use std::time::{Duration, Instant};
-
-use dashmap::DashMap;
-use parking_lot::Mutex as PlMutex;
+use std::sync::atomic::AtomicU64;
 
 
-use bson::{Document, doc};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::{RwLock, mpsc, watch};
-use tokio::time::{MissedTickBehavior, interval, interval_at, sleep, sleep_until};
 
-use crate::auth;
-use crate::constants::{fishing as fishing_consts, movement as movement_consts, network as network_consts, protocol as ids, timing, tutorial as tutorial_consts};
-use crate::logging::{Direction, Logger};
-use crate::lua_runtime::{self, LuaScriptHandle};
-use crate::models::{
-    AuthInput, BotTarget, InventoryItem, LuaCollectableSnapshot, LuaGrowingTileSnapshot,
-    LuaScriptStatusSnapshot, LuaTileSnapshot, LuaWorldObjectsSnapshot, LuaWorldSnapshot,
-    LuaWorldSpawnSnapshot, LuaWorldTilesSnapshot, MinimapSnapshot, PlayerPosition,
-    RemotePlayerSnapshot, SessionSnapshot, SessionStatus, TileCount, WorldSnapshot,
-};
-use crate::net;
-use crate::pathfinding::astar;
-use crate::protocol;
-use crate::world;
+
+
 
 pub mod automine;
 pub mod autonether;
@@ -44,11 +17,7 @@ mod tutorial;
 mod world_data;
 pub use bot_session::BotSession;
 pub use manager::SessionManager;
-use fishing::*;
-use movement::*;
-use network::*;
 use state::*;
-use tutorial::*;
 use world_data::*;
 
 pub(crate) static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);

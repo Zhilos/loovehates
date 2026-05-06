@@ -594,19 +594,18 @@ pub(super) struct InventoryEntry {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub(super) struct AiEnemyState {
-    pub(super) ai_id: i32,
-    pub(super) map_x: i32,
-    pub(super) map_y: i32,
-    pub(super) last_seen: Instant,
-    pub(super) alive: bool,
+pub(crate) struct AiEnemyState {
+    pub(crate) ai_id: i32,
+    pub(crate) map_x: i32,
+    pub(crate) map_y: i32,
+    pub(crate) last_seen: Instant,
+    pub(crate) alive: bool,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct PendingDrop {
     pub(crate) map_x: i32,
     pub(crate) map_y: i32,
-    pub(crate) registered_at: Instant,
     pub(crate) expires_at: Instant,
 }
 

@@ -12,8 +12,7 @@ use crate::logging::Logger;
 use crate::models::{BotTarget, WorldSnapshot};
 use crate::protocol;
 
-use super::movement::{movement_doc, walk_to_map_cancellable};
-use super::network::{send_doc, send_docs, send_docs_exclusive};
+use super::network::{send_docs, send_docs_exclusive};
 use super::state::{
     FishingAutomationState, FishingPhase, FishingTarget, NamedInventoryEntry,
     OutboundHandle, SessionState,

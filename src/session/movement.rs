@@ -2,7 +2,7 @@
 //! emits movement packets via the network senders.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use bson::Document;
@@ -11,15 +11,14 @@ use tokio::time::{interval, sleep, MissedTickBehavior};
 
 use crate::constants::{movement, tutorial};
 use crate::logging::Logger;
-use crate::models::{InventoryItem, LuaTileSnapshot, SessionSnapshot, SessionStatus};
+use crate::models::{InventoryItem, LuaTileSnapshot, SessionSnapshot};
 use crate::pathfinding::astar;
 use crate::protocol;
 
 use super::network::{
-    ensure_not_cancelled, send_doc, send_doc_before_generated, send_docs_exclusive,
-    send_docs_immediate, send_scheduler_cmd,
+    ensure_not_cancelled, send_doc_before_generated, send_docs_exclusive, send_scheduler_cmd,
 };
-use super::state::{OutboundHandle, SchedulerCommand, SchedulerPhase, SessionState};
+use super::state::{OutboundHandle, SchedulerCommand, SessionState};
 
 // tile helpers still live in mod.rs until Task 8 — pull them in via super.
 use super::{tile_index, tile_snapshot_at};
@@ -105,11 +104,22 @@ pub(super) async fn walk_to_map_cancellable(
     let steps = path.unwrap_or_else(|| {
         fallback_straight_line_path((start_x, start_y), (target_map_x, target_map_y))
     });
+    
+    walk_to_map_point(state, outbound_tx, &steps, cancel).await
+}
+
+pub(super) async fn walk_to_map_point(
+    state: &Arc<RwLock<SessionState>>,
+    outbound_tx: &OutboundHandle,
+    steps: &[(i32, i32)],
+    cancel: &AtomicBool,
+) -> Result<(), String> {
     let mut last_direction = {
         let state = state.read().await;
         current_facing_direction(&state)
     };
 
+    let mut current_anim = movement::ANIM_IDLE;
     for window in steps.windows(2) {
         ensure_not_cancelled(cancel)?;
         let [previous, current] = window else {
@@ -126,7 +136,11 @@ pub(super) async fn walk_to_map_cancellable(
         let dy = (current.1 as i32) - (previous.1 as i32);
         let (start_anim, target_anim) = if dy > 0 {
             // Moving DOWN in map coords = falling in world
-            (movement::ANIM_START_FALL, movement::ANIM_FALL)
+            if current_anim != movement::ANIM_FALL && current_anim != movement::ANIM_START_FALL {
+                (movement::ANIM_START_FALL, movement::ANIM_FALL)
+            } else {
+                (movement::ANIM_FALL, movement::ANIM_WALK)
+            }
         } else if dy < 0 {
             // Moving UP in map coords = jumping in world
             (movement::ANIM_JUMP, movement::ANIM_JUMP)
@@ -134,6 +148,7 @@ pub(super) async fn walk_to_map_cancellable(
             // Horizontal (walking).
             (movement::ANIM_WALK, movement::ANIM_WALK)
         };
+        current_anim = target_anim;
 
         move_to_map(
             state,
@@ -143,6 +158,7 @@ pub(super) async fn walk_to_map_cancellable(
             direction,
             start_anim,
             target_anim,
+            Vec::new(),
         )
         .await?;
         sleep(tutorial::walk_step_pause()).await;
@@ -191,20 +207,37 @@ pub(super) async fn walk_predefined_path(
         )
     };
 
+    let mut current_anim = movement::ANIM_IDLE;
     for &(map_x, map_y) in steps {
         let direction = if map_x < previous.0 {
             movement::DIR_LEFT
         } else {
             movement::DIR_RIGHT
         };
+
+        let dy = (map_y as i32) - (previous.1 as i32);
+        let (start_anim, target_anim) = if dy > 0 {
+            if current_anim != movement::ANIM_FALL && current_anim != movement::ANIM_START_FALL {
+                (movement::ANIM_START_FALL, movement::ANIM_FALL)
+            } else {
+                (movement::ANIM_FALL, movement::ANIM_WALK)
+            }
+        } else if dy < 0 {
+            (movement::ANIM_JUMP, movement::ANIM_JUMP)
+        } else {
+            (movement::ANIM_WALK, movement::ANIM_WALK)
+        };
+        current_anim = target_anim;
+
         move_to_map(
             state,
             outbound_tx,
             map_x,
             map_y,
             direction,
-            movement::ANIM_WALK,
-            movement::ANIM_WALK,
+            start_anim,
+            target_anim,
+            Vec::new(),
         )
         .await?;
         previous = (map_x, map_y);
@@ -549,8 +582,9 @@ pub(super) async fn move_to_map(
     map_x: i32,
     map_y: i32,
     direction: i32,
-    start_anim: i32,
+    _start_anim: i32,
     target_anim: i32,
+    extra_packets: Vec<Document>,
 ) -> Result<(), String> {
     let (world_x, world_y) = {
         let mut state = state.write().await;
@@ -566,17 +600,26 @@ pub(super) async fn move_to_map(
         let state = state.read().await;
         state.user_id.clone()
     };
-    // Send mp and mP together in an exclusive batch to ensure they are processed
-    // as a single atomic movement step by the server.
-    let mut mP = protocol::make_movement_packet(world_x, world_y, target_anim, direction, false);
+    
+    // Legitimate 3-packet movement sequence (matches official client voice):
+    // 1. mP { a:ANIM_IDLE } - "Settle" at target position
+    // 2. mp { pM:binary }    - Update map coordinates
+    // 3. mP { a:target_anim } - Proceed with walking/jumping animation
+    // 4+. [Extra packets]    - Optional hits, collects, etc.
+    
+    let mut m_p_settle = protocol::make_movement_packet(world_x, world_y, movement::ANIM_IDLE, direction, false);
+    let mut m_p_proceed = protocol::make_movement_packet(world_x, world_y, target_anim, direction, false);
+    
     if let Some(u) = user_id {
-        mP.insert("U", u);
+        m_p_settle.insert("U", u.clone());
+        m_p_proceed.insert("U", u);
     }
-    // Real client sends exactly mc:2 — just mp + mP. No ST, no from-position.
-    let packets = vec![
-        protocol::make_map_point(map_x, map_y),
-        mP,
-    ];
+
+    let mut packets = Vec::with_capacity(3 + extra_packets.len());
+    packets.push(m_p_settle);
+    packets.push(protocol::make_map_point(map_x, map_y));
+    packets.push(m_p_proceed);
+    packets.extend(extra_packets);
 
     send_docs_exclusive(outbound_tx, packets).await
 }

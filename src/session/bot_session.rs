@@ -3,70 +3,54 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
-use bson::{Document, doc};
+use bson::Document;
 use parking_lot::Mutex as PlMutex;
-use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::{mpsc, watch, RwLock};
-use tokio::time::{interval, sleep, MissedTickBehavior};
+use tokio::time::sleep;
 
 use crate::auth;
 use crate::constants::{
-    fishing as fishing_consts, movement as movement_consts, network as network_consts,
-    protocol as ids, timing, tutorial as tutorial_consts,
+    movement as movement_consts, network as network_consts,
+    protocol as ids, tutorial as tutorial_consts,
 };
 use crate::logging::{Direction, Logger};
-use crate::lua_runtime::{self, LuaScriptHandle};
 use crate::models::{
-    AiEnemySnapshot, AuthInput, BotTarget, FishingStartRequest, InventoryItem,
-    LuaCollectableSnapshot, LuaGrowingTileSnapshot, LuaScriptStartRequest, LuaTileSnapshot,
+    AuthInput, InventoryItem,
+    LuaCollectableSnapshot, LuaGrowingTileSnapshot, LuaTileSnapshot,
     LuaWorldObjectsSnapshot, LuaWorldSnapshot, LuaWorldSpawnSnapshot, LuaWorldTilesSnapshot,
-    MinimapSnapshot, PlayerPosition, RemotePlayerSnapshot, ServerEvent, SessionSnapshot,
-    SessionStatus, TileCount, WorldSnapshot,
+    MinimapSnapshot, PlayerPosition, RemotePlayerSnapshot, SessionSnapshot,
+    SessionStatus,
 };
 use crate::net;
-use crate::pathfinding::astar;
 use crate::protocol;
 use crate::world;
 
-use super::automine::{self, run_automine_loop};
+use super::automine::{self};
 use super::autonether;
-use super::fishing::{fishing_loop, stop_fishing_game};
+use super::fishing::fishing_loop;
 use super::movement::{
-    current_facing_direction, drop_target_tile, fallback_straight_line_path,
-    is_walkable_map_position, manual_move, manual_place, manual_punch, move_to_map, movement_doc,
-    next_manual_step, planned_path, punch_target_from_offset, send_world_chat,
-    set_local_map_position, set_local_world_position, spam_loop, walk_predefined_path,
-    walk_to_map, walk_to_map_cancellable, wait_for_map_position,
+    drop_target_tile, fallback_straight_line_path, manual_move, manual_place, manual_punch, planned_path, send_world_chat, spam_loop, walk_to_map_cancellable,
 };
 use super::network::{
-    enqueue_packets, ensure_not_cancelled, read_loop, scheduler_loop, send_doc,
-    send_doc_before_generated, send_docs, send_docs_exclusive, send_docs_immediate,
+    ensure_not_cancelled, read_loop, scheduler_loop, send_doc, send_docs_exclusive, send_docs_immediate,
     send_scheduler_cmd, stop_background_worker, update_player_position_from_message,
 };
 use super::state::{
     ActiveRuntime, AiEnemyState, CollectCooldowns, CollectableState, ControllerEvent,
-    FishingAutomationState, FishingPhase, FishingTarget, GrowingTileState, InventoryEntry,
-    NamedInventoryEntry, OutboundHandle, PendingBatch, QueuePriority, SchedulerCommand,
-    SchedulerPhase, SchedulerState, SendMode, SessionCommand, SessionState, StSyncState,
+    FishingAutomationState, FishingPhase, FishingTarget, GrowingTileState, InventoryEntry, OutboundHandle, SchedulerCommand,
+    SchedulerPhase, SessionCommand, SessionState,
 };
 use super::fishing::{
-    consume_fishing_bait, find_fishing_map_point, initialize_fishing_gauge, rod_family_name,
-    service_fishing_simulation,
-};
-use super::tutorial::{
-    ensure_world, ensure_world_cancellable, run_tutorial_script, wait_for_tutorial_phase4_ack,
-    wait_for_tutorial_spawn_pod_confirmation, wait_for_tutorial_world_ready_to_enter,
+    find_fishing_map_point, initialize_fishing_gauge,
 };
 use super::world_data::{
     apply_destroy_block_change, apply_foreground_block_change, block_inventory_type_for,
-    block_name_for, block_names, block_type_name_for, block_types,
-    collect_all_visible_collectables, collect_all_visible_collectables_cancellable,
-    decode_inventory, find_inventory_bait, inventory_key_for, is_tile_ready_to_harvest_at,
-    normalize_block_name, publish_state_snapshot, summarize_tile_counts, tile_index,
-    tile_snapshot_at, wait_for_collectables, POSITION_PUBLISH_THROTTLE,
+    block_name_for, block_types, collect_all_visible_collectables_cancellable,
+    decode_inventory, find_inventory_bait, is_tile_ready_to_harvest_at,
+    tile_snapshot_at, POSITION_PUBLISH_THROTTLE,
 };
 
 
@@ -1154,7 +1138,7 @@ impl BotSession {
                     }
                     SessionCommand::StartAutonether => {
                         stop_background_worker(&mut autonether_stop_tx);
-                        let Some(active) = &runtime else {
+                        let Some(_active) = &runtime else {
                             self.set_error("connect the session before starting autonether".to_string()).await;
                             continue;
                         };
@@ -2203,12 +2187,10 @@ impl BotSession {
             st.pending_drops.retain(|d| d.expires_at > now);
 
             // Check if this arrival matches a pending drop
-            let mut found_match = false;
             for i in 0..st.pending_drops.len() {
                 let d = &st.pending_drops[i];
                 if d.map_x == collectable.map_x && d.map_y == collectable.map_y {
                     collectable.from_recent_break = true;
-                    found_match = true;
                     st.pending_drops.remove(i);
                     break;
                 }

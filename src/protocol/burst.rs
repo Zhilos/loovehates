@@ -8,10 +8,9 @@
 use bson::Document;
 
 use crate::constants::movement;
-use crate::constants::protocol as ids;
 
 use super::{
-    csharp_ticks, make_collectable_request, make_hit_ai_enemy, make_hit_block, make_map_point,
+    make_collectable_request, make_hit_ai_enemy, make_hit_block,
     make_map_point_bare, make_movement_packet,
 };
 
@@ -34,34 +33,7 @@ pub fn make_stationary_hit(
     burst
 }
 
-/// Move+mine burst: mp (pM of target) + mP (a:7 HitMove, at target world pos) + N×HB [+ optional collect requests].
-/// Use when the bot steps INTO the target tile while swinging.
-pub fn make_move_mine_burst(
-    target_map_x: i32,
-    target_map_y: i32,
-    target_world_x: f64,
-    target_world_y: f64,
-    direction: i32,
-    n_hits: u32,
-    collectables: &[i32],
-) -> Vec<Document> {
-    let mut burst = Vec::with_capacity(2 + (n_hits as usize) + collectables.len());
-    burst.push(make_map_point(target_map_x, target_map_y));
-    burst.push(make_movement_packet(
-        target_world_x,
-        target_world_y,
-        movement::ANIM_HIT_MOVE,
-        direction,
-        false,
-    ));
-    for _ in 0..n_hits {
-        burst.push(make_hit_block(target_map_x, target_map_y));
-    }
-    for &cid in collectables {
-        burst.push(make_collectable_request(cid));
-    }
-    burst
-}
+
 
 /// Build a combat burst: mP (a:6) + N×HAI.
 pub fn make_combat_burst(
@@ -93,11 +65,7 @@ pub fn make_combat_burst(
 }
 
 
-/// C# DateTime.UtcNow.Ticks alias for callers that want a fresh timestamp
-/// without importing the parent module's helper.
-pub fn current_csharp_ticks() -> i64 {
-    csharp_ticks()
-}
+
 
 #[cfg(test)]
 mod tests {

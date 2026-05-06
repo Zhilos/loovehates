@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-use bson::Document;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::sleep;
 
@@ -16,13 +15,11 @@ use crate::models::{PlayerPosition, SessionStatus};
 use crate::protocol;
 
 use super::movement::{
-    movement_doc, set_local_map_position, set_local_world_position, walk_predefined_path,
-    walk_to_map_cancellable,
+    set_local_map_position, set_local_world_position,
 };
 use super::network::{
-    ensure_not_cancelled, send_doc, send_docs, send_docs_exclusive, send_scheduler_cmd,
+    ensure_not_cancelled, send_docs_exclusive, send_scheduler_cmd,
 };
-use super::publish_state_snapshot;
 use super::state::{
     ControllerEvent, OutboundHandle, SchedulerCommand, SchedulerPhase, SessionCommand, SessionState,
 };
