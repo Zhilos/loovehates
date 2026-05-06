@@ -390,17 +390,14 @@ pub fn make_mine_hit_stationary(
     direction: i32,
 ) -> Vec<Document> {
     let (world_x, world_y) = map_to_world(player_x as f64, player_y as f64);
+    // Restored from commit 50aa38eb (the version the user confirmed worked).
+    // Shape: mP(HIT, full pos) + HB(once) + empty mP. mc:3.
+    // No PAoP/PAiP, no ST footer, no triple-hit. Plain and simple.
     vec![
-        // Use IDLE to keep the anim/physics check happy (we are stationary).
+        // Use IDLE instead of HIT to bypass physics/anim desync kicks
         make_movement_packet(world_x, world_y, movement::ANIM_IDLE, direction, false),
-        // Triple hit. PAoP/PAiP are intentionally NOT included — the server's
-        // mining handler does not expect them in the action bundle and adding
-        // them triggers KErr (verified by user smoke test).
         make_hit_block(hit_x, hit_y),
-        make_hit_block(hit_x, hit_y),
-        make_hit_block(hit_x, hit_y),
-        // Sync
-        make_st(),
+        make_empty_movement(),
     ]
 }
 
@@ -430,17 +427,17 @@ pub fn make_mine_hit_portal_sandwich(
 }
 
 pub fn make_move_to_map_point(player_x: i32, player_y: i32, map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
-    let (old_world_x, old_world_y) = map_to_world(player_x as f64, player_y as f64);
-    let (new_world_x, new_world_y) = map_to_world(map_x as f64, map_y as f64);
+    let _ = (player_x, player_y);
+    let (world_x, world_y) = map_to_world(map_x as f64, map_y as f64);
+    // Restored from commit 6fa372b — mc:3 shape that the user confirmed
+    // worked. Both mP packets land at the DESTINATION position (not at the
+    // old/new pair); the IDLE prelude declares "I'm at destination, idle"
+    // immediately followed by "I'm at destination, <walk_anim>". The mp
+    // map-point sits between them. No ST.
     vec![
-        // 1. Settle at current position with IDLE animation.
-        make_movement_packet(old_world_x, old_world_y, movement::ANIM_IDLE, direction, false),
-        // 2. State intent to move to new map point.
+        make_movement_packet(world_x, world_y, movement::ANIM_IDLE, direction, false),
         make_map_point(map_x, map_y),
-        // 3. Complete the movement with the requested animation at destination.
-        make_movement_packet(new_world_x, new_world_y, anim, direction, false),
-        // 4. Sync clock.
-        make_st(),
+        make_movement_packet(world_x, world_y, anim, direction, false),
     ]
 }
 

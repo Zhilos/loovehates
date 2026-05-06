@@ -43,15 +43,11 @@ pub fn find_best_bot_target(
     let mut best_target: Option<(crate::models::BotTarget, u32)> = None;
 
     // Collectibles (items on the floor) and gemstones (blocks in walls) are
-    // ranked equally — nearest reachable target wins. The crosshair shows
-    // the collectable's actual position; pathfinding to it is handled by
-    // the loop, which already walks to whatever adjacent walkable tile
-    // gets it within the auto-collect radius.
+    // ranked equally — nearest reachable target wins.
     for (&id, state) in collectables {
         if cooldowns.is_on_cooldown(id) {
             continue;
         }
-
         let dx = state.map_x - player_map_x;
         let dy = state.map_y - player_map_y;
         let dist_sq = (dx * dx + dy * dy) as u32;
@@ -82,41 +78,39 @@ pub fn find_best_bot_target(
         }
     }
 
-    // 2. Gemstones (blocks in walls). Compete with collectables — nearest wins.
-    // Previously this was gated on `best_target.is_none()` which meant gems
-    // were never targeted as long as ANY collectable existed in the world
-    // (and MINEWORLD seeds 50). Now the gem scan can replace a far-away
-    // collectable when a gem is closer.
-    let search_radius = 60;
-    let min_x = (player_map_x - search_radius).max(0);
-    let max_x = (player_map_x + search_radius).min(world_width as i32 - 1);
-    let min_y = (player_map_y - search_radius).max(0);
-    let max_y = (player_map_y + search_radius).min(world_height as i32 - 1);
+    // 2. Gemstones (blocks in walls). Gemstones only compete if NO collectable was found.
+    if best_target.is_none() {
+        let search_radius = 60;
+        let min_x = (player_map_x - search_radius).max(0);
+        let max_x = (player_map_x + search_radius).min(world_width as i32 - 1);
+        let min_y = (player_map_y - search_radius).max(0);
+        let max_y = (player_map_y + search_radius).min(world_height as i32 - 1);
 
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let index = (y as u32 * world_width + x as u32) as usize;
-            if let Some(&block_id) = foreground_tiles.get(index) {
-                if is_minegem(block_id) {
-                    let dx = x - player_map_x;
-                    let dy = y - player_map_y;
-                    let dist_sq = (dx * dx + dy * dy) as u32;
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let index = (y as u32 * world_width + x as u32) as usize;
+                if let Some(&block_id) = foreground_tiles.get(index) {
+                    if is_minegem(block_id) {
+                        let dx = x - player_map_x;
+                        let dy = y - player_map_y;
+                        let dist_sq = (dx * dx + dy * dy) as u32;
 
-                    let mut near_enemy = false;
-                    for enemy in ai_enemies.values() {
-                        let e_dx = x - enemy.map_x;
-                        let e_dy = y - enemy.map_y;
-                        if (e_dx * e_dx + e_dy * e_dy) < (3 * 3) {
-                            near_enemy = true;
-                            break;
+                        let mut near_enemy = false;
+                        for enemy in ai_enemies.values() {
+                            let e_dx = x - enemy.map_x;
+                            let e_dy = y - enemy.map_y;
+                            if (e_dx * e_dx + e_dy * e_dy) < (3 * 3) {
+                                near_enemy = true;
+                                break;
+                            }
                         }
-                    }
-                    if near_enemy {
-                        continue;
-                    }
+                        if near_enemy {
+                            continue;
+                        }
 
-                    if best_target.is_none() || dist_sq < best_target.as_ref().unwrap().1 {
-                        best_target = Some((crate::models::BotTarget::Mining { x, y }, dist_sq));
+                        if best_target.is_none() || dist_sq < best_target.as_ref().unwrap().1 {
+                            best_target = Some((crate::models::BotTarget::Mining { x, y }, dist_sq));
+                        }
                     }
                 }
             }
@@ -199,10 +193,13 @@ pub(crate) async fn run_automine_loop(
 
     loop {
         let ping = { state.read().await.ping_ms.unwrap_or(0) };
-        let base_delay = 180; // CRANKED UP TO SUPER SPEED
+        // Real client walking speed is ~250ms/tile; sending faster than that
+        // makes the server's anti-cheat flag us as speed-hack (KErr ER=7).
+        // 280ms base + jitter keeps us slightly slower than human-fast.
+        let base_delay = 280;
         let dynamic_delay = {
             let mut rng = rand::rng();
-            let jitter = rng.random_range(0..50); // Minimal jitter for speed
+            let jitter = rng.random_range(0..80);
 
             if ping > 150 {
                 base_delay + (ping - 100) + jitter
@@ -499,44 +496,13 @@ pub(crate) async fn run_automine_loop(
                     );
                     
                     if let Some(t) = best {
-                        let (tx, ty, is_col) = match t {
-                            BotTarget::Mining { x, y } => (x, y, false),
-                            BotTarget::Collecting { x, y, .. } => (x, y, true),
-                            _ => (0, 0, false),
+                        let (tx, ty) = match t {
+                            BotTarget::Mining { x, y } => (x, y),
+                            BotTarget::Collecting { x, y, .. } => (x, y),
+                            _ => (0, 0),
                         };
-
-                        // For collectables, the stored map tile is the floor
-                        // the item sits on (solid). Pathfind to the nearest
-                        // walkable neighbor that brings us within the auto-
-                        // collect radius (chebyshev ≤ 2). Try the tile itself
-                        // first; if pathing fails (it's solid), try the air
-                        // tile directly above and the four cardinal neighbors.
-                        let pathfind_targets: Vec<(i32, i32)> = if is_col {
-                            vec![
-                                (tx, ty),
-                                (tx, ty - 1),
-                                (tx - 1, ty),
-                                (tx + 1, ty),
-                                (tx, ty + 1),
-                            ]
-                        } else {
-                            vec![(tx, ty)]
-                        };
-
-                        for (px_t, py_t) in pathfind_targets {
-                            if px_t < 0 || py_t < 0
-                                || px_t as u32 >= world_width
-                                || py_t as u32 >= world_height
-                            {
-                                continue;
-                            }
-                            if let Some(path) = get_path_to_target(
-                                player_x, player_y, px_t, py_t,
-                                &masked_foreground, world_width, world_height,
-                            ) {
-                                target = Some((t, path));
-                                break;
-                            }
+                        if let Some(path) = get_path_to_target(player_x, player_y, tx, ty, &masked_foreground, world_width, world_height) {
+                            target = Some((t, path));
                         }
                     }
                 }

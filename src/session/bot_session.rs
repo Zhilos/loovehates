@@ -2160,7 +2160,9 @@ impl BotSession {
 
         let pos_x = message.get_f64("PosX").ok().or_else(|| message.get_i32("PosX").ok().map(|v| v as f64)).unwrap_or_default();
         let pos_y = message.get_f64("PosY").ok().or_else(|| message.get_i32("PosY").ok().map(|v| v as f64)).unwrap_or_default();
-        let (mx, my) = protocol::world_to_map(pos_x, pos_y);
+        let (mx_calc, my_calc) = protocol::world_to_map(pos_x, pos_y);
+        let mx = message.get_i32("x").ok().unwrap_or_else(|| mx_calc.floor() as i32);
+        let my = message.get_i32("y").ok().unwrap_or_else(|| my_calc.floor() as i32);
 
         let mut collectable = CollectableState {
             collectable_id,
@@ -2169,8 +2171,8 @@ impl BotSession {
             inventory_type: message.get_i32("InventoryType").unwrap_or_default(),
             pos_x,
             pos_y,
-            map_x: mx.floor() as i32,
-            map_y: my.floor() as i32,
+            map_x: mx,
+            map_y: my,
             is_gem: message.get_bool("IsGem").unwrap_or(false),
             gem_type: message.get_i32("GemType").unwrap_or_default(),
             is_nwc,
