@@ -153,6 +153,8 @@ pub(super) async fn walk_to_map_point(
         move_to_map(
             state,
             outbound_tx,
+            previous.0,
+            previous.1,
             current.0,
             current.1,
             direction,
@@ -232,6 +234,8 @@ pub(super) async fn walk_predefined_path(
         move_to_map(
             state,
             outbound_tx,
+            previous.0,
+            previous.1,
             map_x,
             map_y,
             direction,
@@ -579,49 +583,43 @@ pub(super) fn fallback_straight_line_path(start: (i32, i32), goal: (i32, i32)) -
 pub(super) async fn move_to_map(
     state: &Arc<RwLock<SessionState>>,
     outbound_tx: &OutboundHandle,
-    map_x: i32,
-    map_y: i32,
+    from_x: i32,
+    from_y: i32,
+    to_x: i32,
+    to_y: i32,
     direction: i32,
     _start_anim: i32,
     target_anim: i32,
     extra_packets: Vec<Document>,
 ) -> Result<(), String> {
-    let (world_x, world_y) = {
-        let mut state = state.write().await;
-        let (world_x, world_y) = protocol::map_to_world(map_x as f64, map_y as f64);
-        state.player_position.map_x = Some(map_x as f64);
-        state.player_position.map_y = Some(map_y as f64);
-        state.player_position.world_x = Some(world_x);
-        state.player_position.world_y = Some(world_y);
-        state.current_direction = direction;
-        (world_x, world_y)
-    };
-    let user_id = {
-        let state = state.read().await;
-        state.user_id.clone()
-    };
-    
-    // Legitimate 3-packet movement sequence (matches official client voice):
-    // 1. mP { a:ANIM_IDLE } - "Settle" at target position
-    // 2. mp { pM:binary }    - Update map coordinates
-    // 3. mP { a:target_anim } - Proceed with walking/jumping animation
-    // 4+. [Extra packets]    - Optional hits, collects, etc.
-    
-    let mut m_p_settle = protocol::make_movement_packet(world_x, world_y, movement::ANIM_IDLE, direction, false);
-    let mut m_p_proceed = protocol::make_movement_packet(world_x, world_y, target_anim, direction, false);
-    
-    if let Some(u) = user_id {
-        m_p_settle.insert("U", u.clone());
-        m_p_proceed.insert("U", u);
-    }
+    let (old_wx, old_wy) = protocol::map_to_world(from_x as f64, from_y as f64);
+    let (new_wx, new_wy) = protocol::map_to_world(to_x as f64, to_y as f64);
 
-    let mut packets = Vec::with_capacity(3 + extra_packets.len());
-    packets.push(m_p_settle);
-    packets.push(protocol::make_map_point(map_x, map_y));
-    packets.push(m_p_proceed);
+    // Stable 4-packet movement sequence (matches commit b637b17):
+    // 1. mP at OLD position with ANIM_IDLE  — settle at current pos
+    // 2. mp to NEW position                 — declare map-point intent
+    // 3. mP at NEW position with anim       — complete the move
+    // 4. ST                                 — sync clock
+    let mut packets = Vec::with_capacity(4 + extra_packets.len());
+    packets.push(protocol::make_movement_packet(old_wx, old_wy, movement::ANIM_IDLE, direction, false));
+    packets.push(protocol::make_map_point(to_x, to_y));
+    packets.push(protocol::make_movement_packet(new_wx, new_wy, target_anim, direction, false));
+    packets.push(protocol::make_st());
     packets.extend(extra_packets);
 
-    send_docs_exclusive(outbound_tx, packets).await
+    send_docs_exclusive(outbound_tx, packets).await?;
+
+    // Update state AFTER successful send
+    {
+        let mut st = state.write().await;
+        st.player_position.map_x = Some(to_x as f64);
+        st.player_position.map_y = Some(to_y as f64);
+        st.player_position.world_x = Some(new_wx);
+        st.player_position.world_y = Some(new_wy);
+        st.current_direction = direction;
+    }
+
+    Ok(())
 }
 
 pub(super) async fn wait_for_map_position(

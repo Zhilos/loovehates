@@ -2160,9 +2160,7 @@ impl BotSession {
 
         let pos_x = message.get_f64("PosX").ok().or_else(|| message.get_i32("PosX").ok().map(|v| v as f64)).unwrap_or_default();
         let pos_y = message.get_f64("PosY").ok().or_else(|| message.get_i32("PosY").ok().map(|v| v as f64)).unwrap_or_default();
-        // Collectables in nCo/nWC packets are already in map-tile units.
-        // Do NOT call world_to_map here.
-        let (mx, my) = (pos_x, pos_y);
+        let (mx, my) = protocol::world_to_map(pos_x, pos_y);
 
         let mut collectable = CollectableState {
             collectable_id,

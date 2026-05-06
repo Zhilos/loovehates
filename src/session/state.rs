@@ -457,21 +457,25 @@ impl Default for FishingAutomationState {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct CollectCooldowns {
-    pub(super) cooldowns: HashMap<i32, Instant>,
+pub(crate) struct CollectCooldowns {
+    pub(crate) cooldowns: HashMap<i32, Instant>,
 }
 
 impl CollectCooldowns {
-    pub(super) const COOLDOWN: Duration = Duration::from_secs(3); // 3s per item minimum
+    pub(crate) const COOLDOWN: Duration = Duration::from_secs(3); // 3s per item minimum
 
-    pub(super) fn can_collect(&self, id: i32) -> bool {
+    pub(crate) fn can_collect(&self, id: i32) -> bool {
         match self.cooldowns.get(&id) {
             Some(&last) => last.elapsed() >= Self::COOLDOWN,
             None => true,
         }
     }
 
-    pub(super) fn mark_collected(&mut self, id: i32) {
+    pub(crate) fn is_on_cooldown(&self, id: i32) -> bool {
+        !self.can_collect(id)
+    }
+
+    pub(crate) fn mark_collected(&mut self, id: i32) {
         self.cooldowns.insert(id, Instant::now());
         // Cleanup old entries (older than 30s)
         self.cooldowns

@@ -383,6 +383,65 @@ pub fn make_hit_block(target_x: i32, target_y: i32) -> Document {
 
 
 
+pub fn make_mine_hit_stationary(
+    player_x: i32, player_y: i32,
+    hit_x: i32, hit_y: i32,
+    direction: i32,
+) -> Vec<Document> {
+    let (world_x, world_y) = map_to_world(player_x as f64, player_y as f64);
+    vec![
+        // Use IDLE instead of HIT to bypass speed checks
+        make_movement_packet(world_x, world_y, movement::ANIM_IDLE, direction, false),
+        // Triple hit
+        make_hit_block(hit_x, hit_y),
+        make_hit_block(hit_x, hit_y),
+        make_hit_block(hit_x, hit_y),
+        // Sync
+        make_st(),
+    ]
+}
+
+pub fn make_mine_hit_portal_sandwich(
+    player_x: i32, player_y: i32,
+    hit_x: i32, hit_y: i32,
+    direction: i32,
+    portal_x: i32, portal_y: i32,
+) -> Vec<Document> {
+    let (world_x, world_y) = map_to_world(player_x as f64, player_y as f64);
+    vec![
+        // Position sync (Idle animation)
+        make_movement_packet(world_x, world_y, movement::ANIM_IDLE, direction, false),
+        // Portal "sandwich" (double layered as seen in aphidz)
+        make_portal_arrive_on(portal_x, portal_y),
+        make_portal_arrive_in(portal_x, portal_y),
+        make_portal_arrive_on(portal_x, portal_y),
+        make_portal_arrive_in(portal_x, portal_y),
+        // The hits
+        make_hit_block(hit_x, hit_y),
+        make_hit_block(hit_x, hit_y),
+        make_hit_block(hit_x, hit_y),
+        // Another sandwich layer
+        make_portal_arrive_on(portal_x, portal_y),
+        make_portal_arrive_in(portal_x, portal_y),
+        // Sync
+        make_st(),
+    ]
+}
+
+pub fn make_move_to_map_point(player_x: i32, player_y: i32, map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
+    let (old_world_x, old_world_y) = map_to_world(player_x as f64, player_y as f64);
+    let (new_world_x, new_world_y) = map_to_world(map_x as f64, map_y as f64);
+    vec![
+        // 1. Settle at current position
+        make_movement_packet(old_world_x, old_world_y, movement::ANIM_IDLE, direction, false),
+        // 2. State intent to move to new map point
+        make_map_point(map_x, map_y),
+        // 3. Complete the movement with the requested animation
+        make_movement_packet(new_world_x, new_world_y, anim, direction, false),
+        // 4. Sync clock
+        make_st(),
+    ]
+}
 
 pub fn make_hit_ai_enemy(map_x: i32, map_y: i32, ai_id: i32) -> Document {
     doc! {
@@ -418,6 +477,13 @@ pub fn make_seed_block(target_x: i32, target_y: i32, block_id: i32) -> Document 
     }
 }
 
+pub fn make_progress_signal(value: i32) -> Document {
+    doc! {
+        "ID": ids::PACKET_ID_PROGRESS_SIGNAL,
+        "SIc": value,
+    }
+}
+
 pub fn make_collectable_request(collectable_id: i32) -> Document {
     doc! {
         "ID": ids::PACKET_ID_COLLECTABLE_REQUEST,
@@ -425,10 +491,19 @@ pub fn make_collectable_request(collectable_id: i32) -> Document {
     }
 }
 
-pub fn make_progress_signal(value: i32) -> Document {
+pub fn make_portal_arrive_on(map_x: i32, map_y: i32) -> Document {
     doc! {
-        "ID": ids::PACKET_ID_PROGRESS_SIGNAL,
-        "SIc": value,
+        "ID": ids::PACKET_ID_PORTAL_OUT,
+        "x": map_x,
+        "y": map_y,
+    }
+}
+
+pub fn make_portal_arrive_in(map_x: i32, map_y: i32) -> Document {
+    doc! {
+        "ID": ids::PACKET_ID_PORTAL_IN,
+        "x": map_x,
+        "y": map_y,
     }
 }
 
