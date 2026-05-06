@@ -193,16 +193,15 @@ pub(crate) async fn run_automine_loop(
 
     loop {
         let ping = { state.read().await.ping_ms.unwrap_or(0) };
-        let base_delay = 850;
+        let base_delay = 180; // CRANKED UP TO SUPER SPEED
         let dynamic_delay = {
             let mut rng = rand::rng();
-            let jitter = rng.random_range(0..350);
-            let thinking_pause = if rng.random_bool(0.05) { 500 } else { 0 };
+            let jitter = rng.random_range(0..50); // Minimal jitter for speed
 
             if ping > 150 {
-                base_delay + (ping - 100) + jitter + thinking_pause
+                base_delay + (ping - 100) + jitter
             } else {
-                base_delay + jitter + thinking_pause
+                base_delay + jitter
             }
         };
         let sleep_duration = (last_tick + Duration::from_millis(dynamic_delay as u64))
@@ -279,8 +278,10 @@ pub(crate) async fn run_automine_loop(
                 if world_width == 0 {
                     // World data not loaded yet, send a movement packet to stay alive
                     if is_in_mine {
-
-                        let move_pkts = protocol::make_move_to_map_point(player_x, player_y, player_x, player_y, movement::ANIM_IDLE, movement::DIR_LEFT);
+                        let move_pkts = protocol::make_move_to_map_point(
+                            player_x, player_y, player_x, player_y,
+                            movement::ANIM_IDLE, movement::DIR_LEFT,
+                        );
                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
                     }
                     continue;
@@ -547,20 +548,34 @@ pub(crate) async fn run_automine_loop(
                                         next_is_solid || (is_last_step && !is_collectable)
                                     };
 
-                                    // Special case: collectable on a solid tile.
-                                    // Don't walk into it, just collect from here.
-                                    if is_last_step && is_collectable && next_is_solid {
+                                    // Safety Grab: If the collectable is exactly 1 tile away (adjacent),
+                                    // we send the grab request early to ensure we pick it up.
+                                    let dx = (target_x - player_x).abs();
+                                    let dy = (target_y - player_y).abs();
+                                    let is_adjacent = dx <= 1 && dy <= 1;
+                                    
+                                    if is_collectable && is_adjacent {
                                         let cid = opt_cid.unwrap();
-                                        let pkts = vec![
-                                            protocol::make_collectable_request(cid),
-                                            protocol::make_st(),
-                                        ];
-                                        let _ = send_docs_exclusive(outbound_tx, pkts).await;
-                                        {
-                                            let mut st = state.write().await;
-                                            st.collect_cooldowns.mark_collected(cid);
+                                        // Only send the safety grab if it's not already on cooldown from a previous tick
+                                        let st_read = state.read().await;
+                                        if !st_read.collect_cooldowns.is_on_cooldown(cid) {
+                                            drop(st_read);
+                                            let pkts = vec![
+                                                protocol::make_collectable_request(cid),
+                                                protocol::make_st(),
+                                            ];
+                                            let _ = send_docs_exclusive(outbound_tx, pkts).await;
+                                            {
+                                                let mut st = state.write().await;
+                                                st.collect_cooldowns.mark_collected(cid);
+                                            }
+                                            record_action(state, format!("safety grab cid={cid} from 1-tile away ({player_x},{player_y})")).await;
                                         }
-                                        record_action(state, format!("collect cid={cid} from adjacent ({player_x},{player_y})")).await;
+                                    }
+
+                                    // Special case: If the next tile is SOLID, we cannot walk into it.
+                                    // If we already safety-grabbed it (because it was adjacent), we just stop here.
+                                    if is_last_step && is_collectable && next_is_solid {
                                         continue;
                                     }
 
@@ -605,6 +620,14 @@ pub(crate) async fn run_automine_loop(
                                         }
 
                                         _logger.info("automine", Some(&_session_id), format!("MINING: Path blocked at ({}, {}), hitting from ({}, {})", next_step.0, next_step.1, player_x, player_y));
+                                        let _ = portal_pos; // legacy escape, no longer needed with PAoP/PAiP sandwich
+                                        let user_id = state.read().await.user_id.clone();
+                                        let (wx, wy) = protocol::map_to_world(player_x as f64, player_y as f64);
+                                        
+                                        // We MUST explicitly state we are IDLE before mining!
+                                        // Reverted to legacy mine helper — burst module bypassed
+                                        // for now to confirm/rule out as kick cause.
+                                        let _ = wx; let _ = wy;
                                         let pkts = protocol::make_mine_hit_stationary(
                                             player_x, player_y,
                                             next_step.0, next_step.1,
@@ -628,7 +651,13 @@ pub(crate) async fn run_automine_loop(
                                             movement::ANIM_WALK // Moving horizontal
                                         };
 
-                                        let move_pkts = protocol::make_move_to_map_point(player_x, player_y, next_step.0, next_step.1, anim, dir);
+                                        let (to_wx, to_wy) = protocol::map_to_world(next_step.0 as f64, next_step.1 as f64);
+                                        let _ = to_wx; let _ = to_wy;
+                                        let move_pkts = protocol::make_move_to_map_point(
+                                            player_x, player_y,
+                                            next_step.0, next_step.1,
+                                            anim, dir,
+                                        );
                                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
                                         record_action(state, format!("move from ({player_x},{player_y}) to ({},{}) anim={anim}", next_step.0, next_step.1)).await;
 
@@ -678,20 +707,15 @@ pub(crate) async fn run_automine_loop(
                                                 }
 
                                                 _logger.info("automine", Some(&_session_id), format!("MINING: Stationary hit at ({}, {})", target_x, target_y));
-                                                let hit_pkts = if let Some((px, py)) = portal_pos {
-                                                    protocol::make_mine_hit_portal_sandwich(
-                                                        next_step.0, next_step.1,
-                                                        target_x, target_y,
-                                                        dir,
-                                                        px, py,
-                                                    )
-                                                } else {
-                                                    protocol::make_mine_hit_stationary(
-                                                        next_step.0, next_step.1,
-                                                        target_x, target_y,
-                                                        dir,
-                                                    )
-                                                };
+                                                let _ = portal_pos; // legacy escape, no longer needed with PAoP/PAiP sandwich
+                                                let user_id = state.read().await.user_id.clone();
+                                                let (wx, wy) = protocol::map_to_world(next_step.0 as f64, next_step.1 as f64);
+                                                let _ = wx; let _ = wy;
+                                                let hit_pkts = protocol::make_mine_hit_stationary(
+                                                    next_step.0, next_step.1,
+                                                    target_x, target_y,
+                                                    dir,
+                                                );
                                                 let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
                                                 record_action(state, format!("stationary hit at ({target_x},{target_y})")).await;
                                                 hit_this_tick = Some((target_x, target_y));
@@ -722,20 +746,15 @@ pub(crate) async fn run_automine_loop(
                                         }
 
                                         _logger.info("automine", Some(&_session_id), format!("MINING: On-tile stationary hit at ({}, {})", target_x, target_y));
-                                        let hit_pkts = if let Some((px, py)) = portal_pos {
-                                            protocol::make_mine_hit_portal_sandwich(
-                                                player_x, player_y,
-                                                target_x, target_y,
-                                                dir,
-                                                px, py,
-                                            )
-                                        } else {
-                                            protocol::make_mine_hit_stationary(
-                                                player_x, player_y,
-                                                target_x, target_y,
-                                                dir,
-                                            )
-                                        };
+                                        let _ = portal_pos; // legacy escape, no longer needed with PAoP/PAiP sandwich
+                                        let user_id = state.read().await.user_id.clone();
+                                        let (wx, wy) = protocol::map_to_world(player_x as f64, player_y as f64);
+                                        let _ = wx; let _ = wy;
+                                        let hit_pkts = protocol::make_mine_hit_stationary(
+                                            player_x, player_y,
+                                            target_x, target_y,
+                                            dir,
+                                        );
                                         let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
                                         record_action(state, format!("stationary hit at ({target_x},{target_y}) from ({player_x},{player_y})")).await;
                                         hit_this_tick = Some((target_x, target_y));

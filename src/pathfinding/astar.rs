@@ -209,8 +209,17 @@ fn load_walkable_tile_ids() -> std::collections::HashSet<u16> {
             let id = entry.get("id")?.as_u64()? as u16;
             let name = entry.get("name")?.as_str().unwrap_or("");
             let block_type = entry.get("type")?.as_u64().unwrap_or(0) as u8;
-            // walkable: air tile, non-solid type, or portal regardless of type
-            if id == 0 || block_type != 0 || name.contains("Portal") {
+            // walkable: air tile, non-solid type, portal, or known
+            // decorative mining prop. Mushrooms / stalactites / torches /
+            // bat & spider tiles are typed as "Block" in block_types.json
+            // but the player can walk through them in-game; treating them
+            // as solid traps the pathfinder against decoration.
+            let is_mining_decor = name.starts_with("MiningMushroom")
+                || name.starts_with("MiningStalactites")
+                || name.starts_with("MiningTorch")
+                || name.starts_with("MiningBat")
+                || name.starts_with("MiningSpider");
+            if id == 0 || block_type != 0 || name.contains("Portal") || is_mining_decor {
                 Some(id)
             } else {
                 None

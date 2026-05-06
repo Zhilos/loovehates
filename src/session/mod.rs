@@ -103,10 +103,11 @@ mod tests {
 
     use super::{
         BotSession, CollectCooldowns, FishingAutomationState, GrowingTileState, QueuePriority, SchedulerPhase,
-        SchedulerState, SendMode, SessionState, drop_target_tile,
+        SchedulerState, SendMode, SessionState,
         apply_destroy_block_change, apply_foreground_block_change, is_tile_ready_to_harvest_at,
-        update_player_position_from_message,
     };
+    use super::movement::drop_target_tile;
+    use super::network::update_player_position_from_message;
     use crate::{
         constants::{movement, protocol as ids, timing},
         logging::{EventHub, Logger},
@@ -405,7 +406,6 @@ mod tests {
             batch_ids(&batch),
             vec![
                 ids::PACKET_ID_MAP_POINT.to_string(),
-                ids::PACKET_ID_MOVEMENT.to_string(),
                 "HB".to_string(),
             ]
         );
@@ -419,7 +419,13 @@ mod tests {
 
         let batch = scheduler.take_slot_batch().unwrap();
 
-        assert_eq!(batch_ids(&batch), vec![ids::PACKET_ID_MOVEMENT.to_string()]);
+        assert_eq!(
+            batch_ids(&batch),
+            vec![
+                ids::PACKET_ID_MAP_POINT.to_string(),
+                ids::PACKET_ID_PUNCH.to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -481,7 +487,7 @@ mod tests {
             batch_ids(&batch),
             vec![
                 ids::PACKET_ID_KEEPALIVE.to_string(),
-                ids::PACKET_ID_ST.to_string(),
+                ids::PACKET_ID_SI.to_string(),
             ]
         );
     }

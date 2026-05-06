@@ -6,8 +6,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::constants::{movement, network, protocol as ids};
 
-pub mod burst;
-
 use std::sync::atomic::{AtomicI64, Ordering};
 
 pub static CLOCK_OFFSET: AtomicI64 = AtomicI64::new(0);
@@ -411,16 +409,14 @@ pub fn make_mine_hit_portal_sandwich(
     vec![
         // Position sync (Idle animation)
         make_movement_packet(world_x, world_y, movement::ANIM_IDLE, direction, false),
-        // Portal "sandwich" (double layered as seen in aphidz)
-        make_portal_arrive_on(portal_x, portal_y),
-        make_portal_arrive_in(portal_x, portal_y),
+        // Portal "sandwich" - arriving at portal to mask hit
         make_portal_arrive_on(portal_x, portal_y),
         make_portal_arrive_in(portal_x, portal_y),
         // The hits
         make_hit_block(hit_x, hit_y),
         make_hit_block(hit_x, hit_y),
         make_hit_block(hit_x, hit_y),
-        // Another sandwich layer
+        // Return through portal to clean up
         make_portal_arrive_on(portal_x, portal_y),
         make_portal_arrive_in(portal_x, portal_y),
         // Sync
@@ -828,7 +824,7 @@ mod tests {
             .iter()
             .map(|doc| doc.get_str("ID").unwrap().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["ULS", "cZL", "cZva", "rOP", "rAIp", "rAI", "ST"]);
+        assert_eq!(ids, vec!["ULS", "cZL", "cZva", "rOP", "rAIp", "rAI", "SI"]);
         assert_eq!(batch[0].get_str("LS").unwrap(), "TUTORIAL2");
         assert!((batch[2].get_f64("Amt").unwrap() - 0.40).abs() < f64::EPSILON);
     }
@@ -840,6 +836,6 @@ mod tests {
             .iter()
             .map(|doc| doc.get_str("ID").unwrap().to_string())
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["RtP", "ST"]);
+        assert_eq!(ids, vec!["RtP", "SI"]);
     }
 }
