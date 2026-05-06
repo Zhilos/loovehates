@@ -39,10 +39,10 @@ pub fn find_best_bot_target(
     collectables: &std::collections::HashMap<i32, crate::session::CollectableState>,
     ai_enemies: &std::collections::HashMap<i32, crate::session::AiEnemyState>,
 ) -> Option<crate::models::BotTarget> {
-    let mut best_target: Option<(crate::models::BotTarget, u32)> = None;
+    let mut best_target: Option<(crate::models::BotTarget, u32, bool)> = None;
 
     // Collectibles (items on the floor) and gemstones (blocks in walls) are
-    // ranked equally — nearest reachable target wins.
+    // ranked. Recently broken items (from_recent_break) have absolute priority.
     for (&id, state) in collectables {
         let dx = state.map_x - player_map_x;
         let dy = state.map_y - player_map_y;
@@ -61,7 +61,20 @@ pub fn find_best_bot_target(
             continue;
         }
 
-        if best_target.is_none() || dist_sq < best_target.as_ref().unwrap().1 {
+        let is_better = match &best_target {
+            None => true,
+            Some((_, best_dist, best_recent)) => {
+                if state.from_recent_break && !best_recent {
+                    true // Recent break always beats non-recent
+                } else if !state.from_recent_break && *best_recent {
+                    false // Non-recent never beats recent
+                } else {
+                    dist_sq < *best_dist // Same priority level: use distance
+                }
+            }
+        };
+
+        if is_better {
             best_target = Some((
                 crate::models::BotTarget::Collecting {
                     id,
@@ -70,6 +83,7 @@ pub fn find_best_bot_target(
                     y: state.map_y,
                 },
                 dist_sq,
+                state.from_recent_break,
             ));
         }
     }
@@ -102,15 +116,26 @@ pub fn find_best_bot_target(
                         continue;
                     }
 
-                    if best_target.is_none() || dist_sq < best_target.as_ref().unwrap().1 {
-                        best_target = Some((crate::models::BotTarget::Mining { x, y }, dist_sq));
+                    let is_better = match &best_target {
+                        None => true,
+                        Some((_, best_dist, best_recent)) => {
+                            if *best_recent {
+                                false // Recent drop always beats gemstones
+                            } else {
+                                dist_sq < *best_dist
+                            }
+                        }
+                    };
+
+                    if is_better {
+                        best_target = Some((crate::models::BotTarget::Mining { x, y }, dist_sq, false));
                     }
                 }
             }
         }
     }
 
-    best_target.map(|(target, _)| target)
+    best_target.map(|(target, _, _)| target)
 }
 
 /// Get the A* path from the player's tile to a target tile, if any exists.
@@ -183,6 +208,7 @@ pub(super) async fn automine_loop(
     let mut tile_attempts: HashMap<(i32, i32), u32> = HashMap::new();
     let mut current_world_name: Option<String> = None;
     let mut sticky_target: Option<BotTarget> = None;
+    let mut current_anim = movement::ANIM_IDLE;
 
     loop {
         let ping = { state.read().await.ping_ms.unwrap_or(0) };
@@ -273,7 +299,14 @@ pub(super) async fn automine_loop(
                     // World data not loaded yet, send a movement packet to stay alive
                     if is_in_mine {
 
-                        let move_pkts = protocol::make_move_to_map_point(player_x, player_y, player_x, player_y, movement::ANIM_IDLE, movement::DIR_LEFT);
+                        let user_id = state.read().await.user_id.clone();
+                        let (pwx, pwy) = protocol::map_to_world(player_x as f64, player_y as f64);
+                        let move_pkts = protocol::burst::make_movement_step(
+                            pwx, pwy, pwx, pwy,
+                            player_x, player_y,
+                            movement::ANIM_IDLE, movement::ANIM_IDLE, movement::DIR_LEFT,
+                            user_id.as_deref(),
+                        );
                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
                     }
                     continue;
@@ -362,8 +395,19 @@ pub(super) async fn automine_loop(
                 }
 
                 if let Some((ex, ey, ai_id)) = closest_enemy {
+                    let user_id = state.read().await.user_id.clone();
+                    let (player_wx, player_wy) = protocol::map_to_world(player_x as f64, player_y as f64);
+                    let dir = if ex > player_x { movement::DIR_RIGHT } else { movement::DIR_LEFT };
+                    
                     _logger.info("automine", Some(&_session_id), format!("COMBAT: Hitting single closest AI enemy ID={} at ({},{}) from player pos ({},{})", ai_id, ex, ey, player_x, player_y));
-                    let _ = send_doc(outbound_tx, protocol::make_hit_ai_enemy(ex, ey, ai_id)).await;
+                    let pkts = protocol::burst::make_combat_burst(
+                        player_wx, player_wy,
+                        ex, ey, ai_id,
+                        3,
+                        user_id.as_deref(),
+                        dir,
+                    );
+                    let _ = send_docs_exclusive(outbound_tx, pkts).await;
                     record_action(state, format!("HAI ai_id={ai_id} at=({ex},{ey})")).await;
                 }
 
@@ -516,8 +560,6 @@ pub(super) async fn automine_loop(
                                     // before/after positions. Anything else triggers KErr code 1
                                     // ("animation/physics mismatch"). Smaller map_y = higher visually
                                     // (Unity-style top-down map coords).
-                                    let is_moving_up = next_step.1 < player_y;
-                                    let is_moving_down = next_step.1 > player_y;
 
                                     if move_blocked {
                                         // Check if we already hit this tile and are waiting for a DB packet
@@ -549,33 +591,75 @@ pub(super) async fn automine_loop(
                                             continue;
                                         }
 
-                                        _logger.info("automine", Some(&_session_id), format!("MINING: Path blocked at ({}, {}), hitting from ({}, {})", next_step.0, next_step.1, player_x, player_y));
-                                        let pkts = protocol::make_mine_hit_stationary(
-                                            player_x, player_y,
+                                        let user_id = state.read().await.user_id.clone();
+                                        let (player_wx, player_wy) = protocol::map_to_world(player_x as f64, player_y as f64);
+                                        let dx = (next_step.0 as i32) - (player_x as i32);
+                                        let dy = (next_step.1 as i32) - (player_y as i32);
+                                        let hit_anim = if dy != 0 {
+                                            // Vertical transition (jump/fall): standard hit (6)
+                                            movement::ANIM_HIT
+                                        } else if dx != 0 {
+                                            // Horizontal walk-mine: hit-move (7)
+                                            movement::ANIM_HIT_MOVE
+                                        } else {
+                                            movement::ANIM_HIT
+                                        };
+
+                                        let pkts = protocol::burst::make_mining_burst(
+                                            player_wx, player_wy,
                                             next_step.0, next_step.1,
+                                            3,
+                                            user_id.as_deref(),
                                             dir,
+                                            hit_anim,
                                         );
                                         let _ = send_docs_exclusive(outbound_tx, pkts).await;
+                                        current_anim = movement::ANIM_IDLE;
                                         record_action(state, format!("mine+move from ({player_x},{player_y}) hit ({},{})", next_step.0, next_step.1)).await;
                                         hit_this_tick = Some((next_step.0, next_step.1));
 
                                         {
                                             let mut st = state.write().await;
                                             st.pending_hits.insert((next_step.0, next_step.1), Instant::now());
+                                            let now = Instant::now();
+                                            st.pending_drops.push(super::state::PendingDrop {
+                                                map_x: next_step.0,
+                                                map_y: next_step.1,
+                                                registered_at: now,
+                                                expires_at: now + Duration::from_secs(2),
+                                            });
                                         }
                                     } else {
                                         // Pure movement: pick the anim that physically describes this transition.
-                                        let anim = if next_step.1 > player_y {
-                                            movement::ANIM_FALL // Moving down
-                                        } else if next_step.1 < player_y {
-                                            movement::ANIM_JUMP // Moving up
+                                        let dy = (next_step.1 as i32) - (player_y as i32);
+                                        let (start_anim, target_anim) = if dy > 0 {
+                                            // Moving DOWN in map coords = falling in world
+                                            if current_anim != movement::ANIM_FALL && current_anim != movement::ANIM_START_FALL {
+                                                (movement::ANIM_START_FALL, movement::ANIM_FALL)
+                                            } else {
+                                                (movement::ANIM_FALL, movement::ANIM_WALK)
+                                            }
+                                        } else if dy < 0 {
+                                            // Moving UP in map coords = jumping in world
+                                            (movement::ANIM_JUMP, movement::ANIM_JUMP)
                                         } else {
-                                            movement::ANIM_WALK // Moving horizontal
+                                            // Horizontal (walking).
+                                            (movement::ANIM_WALK, movement::ANIM_WALK)
                                         };
+ 
+                                         current_anim = target_anim;
 
-                                        let move_pkts = protocol::make_move_to_map_point(player_x, player_y, next_step.0, next_step.1, anim, dir);
+                                        let user_id = state.read().await.user_id.clone();
+                                        let (from_wx, from_wy) = protocol::map_to_world(player_x as f64, player_y as f64);
+                                        let (to_wx, to_wy) = protocol::map_to_world(next_step.0 as f64, next_step.1 as f64);
+                                        let move_pkts = protocol::burst::make_movement_step(
+                                            from_wx, from_wy, to_wx, to_wy,
+                                            next_step.0, next_step.1,
+                                            start_anim, target_anim, dir,
+                                            user_id.as_deref(),
+                                        );
                                         let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
-                                        record_action(state, format!("move from ({player_x},{player_y}) to ({},{}) anim={anim}", next_step.0, next_step.1)).await;
+                                        record_action(state, format!("move from ({player_x},{player_y}) to ({},{}) anim={}->{}", next_step.0, next_step.1, start_anim, target_anim)).await;
 
                                         {
                                             let mut st = state.write().await;
@@ -611,15 +695,31 @@ pub(super) async fn automine_loop(
                                                     continue;
                                                 }
 
-                                                _logger.info("automine", Some(&_session_id), format!("MINING: Stationary hit at ({}, {})", target_x, target_y));
-                                                let hit_pkts = protocol::make_mine_hit_stationary(
-                                                    next_step.0, next_step.1,
+                                                let user_id = state.read().await.user_id.clone();
+                                                let (player_wx, player_wy) = protocol::map_to_world(next_step.0 as f64, next_step.1 as f64);
+                                                let hit_pkts = protocol::burst::make_mining_burst(
+                                                    player_wx, player_wy,
                                                     target_x, target_y,
+                                                    3,
+                                                    user_id.as_deref(),
                                                     dir,
+                                                    movement::ANIM_HIT,
                                                 );
                                                 let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
+                                                current_anim = movement::ANIM_IDLE;
                                                 record_action(state, format!("stationary hit at ({target_x},{target_y})")).await;
                                                 hit_this_tick = Some((target_x, target_y));
+                                                
+                                                {
+                                                    let mut st = state.write().await;
+                                                    let now = Instant::now();
+                                                    st.pending_drops.push(super::state::PendingDrop {
+                                                        map_x: target_x,
+                                                        map_y: target_y,
+                                                        registered_at: now,
+                                                        expires_at: now + Duration::from_secs(2),
+                                                    });
+                                                }
                                             }
                                         }
                                     }
@@ -642,15 +742,31 @@ pub(super) async fn automine_loop(
                                             continue;
                                         }
 
-                                        _logger.info("automine", Some(&_session_id), format!("MINING: On-tile stationary hit at ({}, {})", target_x, target_y));
-                                        let hit_pkts = protocol::make_mine_hit_stationary(
-                                            player_x, player_y,
+                                        let user_id = state.read().await.user_id.clone();
+                                        let (player_wx, player_wy) = protocol::map_to_world(player_x as f64, player_y as f64);
+                                        let hit_pkts = protocol::burst::make_mining_burst(
+                                            player_wx, player_wy,
                                             target_x, target_y,
+                                            3,
+                                            user_id.as_deref(),
                                             dir,
+                                            movement::ANIM_HIT,
                                         );
                                         let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
+                                        current_anim = movement::ANIM_IDLE;
                                         record_action(state, format!("stationary hit at ({target_x},{target_y}) from ({player_x},{player_y})")).await;
                                         hit_this_tick = Some((target_x, target_y));
+
+                                        {
+                                            let mut st = state.write().await;
+                                            let now = Instant::now();
+                                            st.pending_drops.push(super::state::PendingDrop {
+                                                map_x: target_x,
+                                                map_y: target_y,
+                                                registered_at: now,
+                                                expires_at: now + Duration::from_secs(2),
+                                            });
+                                        }
                                     }
                                 }
                             }

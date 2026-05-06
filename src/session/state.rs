@@ -58,6 +58,9 @@ pub(super) enum SchedulerCommand {
     SetPhase {
         phase: SchedulerPhase,
     },
+    UpdateBurstPacing {
+        next_allowed: Instant,
+    },
     StResponseReceived,
     Shutdown,
 }
@@ -150,6 +153,7 @@ pub(super) struct SchedulerState {
     pub(super) immediate: VecDeque<Vec<Document>>,
     pub(super) menu_keepalive_due: bool,
     pub(super) st_due: bool,
+    pub(super) next_burst_allowed_at: Instant,
 }
 
 impl SchedulerState {
@@ -162,6 +166,7 @@ impl SchedulerState {
             immediate: VecDeque::new(),
             menu_keepalive_due: false,
             st_due: true,
+            next_burst_allowed_at: Instant::now(),
         }
     }
 
@@ -312,13 +317,16 @@ impl SchedulerState {
                 }
             }
             SchedulerPhase::WorldIdle => {
-                batch.extend(after_generated);
+                batch.push(protocol::make_movement_packet(
+                    self.movement.world_x,
+                    self.movement.world_y,
+                    self.movement.anim,
+                    self.movement.direction,
+                    false,
+                ));
                 if self.st_due {
                     batch.push(protocol::make_st());
                     self.st_due = false;
-                }
-                if batch.is_empty() {
-                    return None;
                 }
             }
             SchedulerPhase::WorldMoving => {
@@ -528,6 +536,7 @@ pub(super) struct SessionState {
     pub(super) rate_limit_until: Option<Instant>,
     pub(super) current_target: Option<BotTarget>,
     pub(super) world_items: Vec<crate::world::DecodedWorldItem>,
+    pub(super) pending_drops: Vec<PendingDrop>,
 }
 
 #[derive(Debug)]
@@ -602,6 +611,14 @@ pub(super) struct AiEnemyState {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct PendingDrop {
+    pub(crate) map_x: i32,
+    pub(crate) map_y: i32,
+    pub(crate) registered_at: Instant,
+    pub(crate) expires_at: Instant,
+}
+
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub(crate) struct CollectableState {
     pub(crate) collectable_id: i32,
@@ -615,6 +632,7 @@ pub(crate) struct CollectableState {
     pub(crate) is_gem: bool,
     pub(crate) gem_type: i32,
     pub(crate) is_nwc: bool,
+    pub(crate) from_recent_break: bool,
 }
 
 #[derive(Debug, Clone)]

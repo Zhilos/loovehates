@@ -133,7 +133,7 @@ mod tests {
     use bson::{Document, doc};
 
     use super::{
-        BotSession, FishingAutomationState, GrowingTileState, QueuePriority, SchedulerPhase,
+        BotSession, CollectCooldowns, FishingAutomationState, GrowingTileState, QueuePriority, SchedulerPhase,
         SchedulerState, SendMode, SessionState, drop_target_tile,
         apply_destroy_block_change, apply_foreground_block_change, is_tile_ready_to_harvest_at,
         update_player_position_from_message,
@@ -190,7 +190,7 @@ mod tests {
                 world_x: None,
                 world_y: None,
             },
-            current_direction: movement_consts::DIR_RIGHT,
+            current_direction: movement::DIR_RIGHT,
             other_players: HashMap::new(),
             ai_enemies: HashMap::new(),
             inventory: Vec::new(),
@@ -200,7 +200,13 @@ mod tests {
             tutorial_spawn_pod_confirmed: false,
             tutorial_automation_running: false,
             tutorial_phase4_acknowledged: false,
+            autonether: super::autonether::AutonetherState::new(),
             fishing: FishingAutomationState::default(),
+            collect_cooldowns: CollectCooldowns::default(),
+            current_target: None,
+            world_items: Vec::new(),
+            pending_drops: Vec::new(),
+            rate_limit_until: None,
             ping_ms: None,
         }
     }
@@ -412,7 +418,7 @@ mod tests {
         let mut scheduler = SchedulerState::new();
         scheduler.set_phase(SchedulerPhase::WorldIdle);
         scheduler.st_due = false;
-        scheduler.update_movement(12.8, 9.44, true, movement_consts::ANIM_WALK, movement_consts::DIR_RIGHT);
+        scheduler.update_movement(12.8, 9.44, true, movement::ANIM_WALK, movement::DIR_RIGHT);
         scheduler.enqueue_packets(
             vec![protocol::make_map_point(41, 30)],
             SendMode::Mergeable,
@@ -531,7 +537,7 @@ mod tests {
         let mut state = test_state(10, 10, vec![0; 100], vec![0; 100]);
         state.player_position.map_x = Some(40.0);
         state.player_position.map_y = Some(30.0);
-        state.current_direction = movement_consts::DIR_RIGHT;
+        state.current_direction = movement::DIR_RIGHT;
 
         let target = drop_target_tile(&state).unwrap();
 

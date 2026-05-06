@@ -72,9 +72,9 @@ use super::world_data::{
 
 #[derive(Debug)]
 pub struct BotSession {
-    id: String,
+    pub(crate) id: String,
     auth: AuthInput,
-    state: Arc<RwLock<SessionState>>,
+    pub(crate) state: Arc<RwLock<SessionState>>,
     controller_tx: mpsc::Sender<ControllerEvent>,
     logger: Logger,
     last_position_publish_at: PlMutex<Option<Instant>>,
@@ -136,6 +136,7 @@ impl BotSession {
             rate_limit_until: None,
             current_target: None,
             autonether: autonether::AutonetherState::new(),
+            pending_drops: Vec::new(),
         }));
 
         let session = Arc::new(Self {
@@ -1414,6 +1415,16 @@ impl BotSession {
                 )
                 .await;
             }
+            ids::PACKET_ID_SERVER_SLEEP => {
+                if let Some(ms) = message.get_i32("ms").ok() {
+                    let next_allowed = Instant::now() + Duration::from_millis(ms as u64);
+                    let _ = send_scheduler_cmd(
+                        &runtime.outbound_tx,
+                        SchedulerCommand::UpdateBurstPacing { next_allowed },
+                    )
+                    .await;
+                }
+            }
             ids::PACKET_ID_KEEPALIVE
             | ids::PACKET_ID_VCHK
             | ids::PACKET_ID_WREU
@@ -1596,6 +1607,7 @@ impl BotSession {
                                     is_gem: c.is_gem,
                                     gem_type: c.gem_type,
                                     is_nwc: false,
+                                    from_recent_break: false,
                                 });
                             }
 
@@ -1966,7 +1978,7 @@ impl BotSession {
         }
     }
 
-    async fn remove_other_player(&self, message: &Document) {
+    pub(crate) async fn remove_other_player(&self, message: &Document) {
         let Ok(user_id) = message.get_str("U") else {
             return;
         };
@@ -2157,7 +2169,7 @@ impl BotSession {
         // Do NOT call world_to_map here.
         let (mx, my) = (pos_x, pos_y);
 
-        let collectable = CollectableState {
+        let mut collectable = CollectableState {
             collectable_id,
             block_type: message.get_i32("BlockType").unwrap_or_default(),
             amount: message.get_i32("Amount").unwrap_or_default(),
@@ -2169,13 +2181,30 @@ impl BotSession {
             is_gem: message.get_bool("IsGem").unwrap_or(false),
             gem_type: message.get_i32("GemType").unwrap_or_default(),
             is_nwc,
+            from_recent_break: false,
         };
 
-        self.state
-            .write()
-            .await
-            .collectables
-            .insert(collectable_id, collectable);
+        {
+            let mut st = self.state.write().await;
+            
+            // Clean up expired drops while we're here
+            let now = Instant::now();
+            st.pending_drops.retain(|d| d.expires_at > now);
+
+            // Check if this arrival matches a pending drop
+            let mut found_match = false;
+            for i in 0..st.pending_drops.len() {
+                let d = &st.pending_drops[i];
+                if d.map_x == collectable.map_x && d.map_y == collectable.map_y {
+                    collectable.from_recent_break = true;
+                    found_match = true;
+                    st.pending_drops.remove(i);
+                    break;
+                }
+            }
+
+            st.collectables.insert(collectable_id, collectable);
+        }
     }
 
     async fn remove_collectable(&self, message: &Document) {

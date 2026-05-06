@@ -129,6 +129,10 @@ pub(super) async fn scheduler_loop(
 
             _ = async {}, if scheduler.has_immediate_batch() => {
                 if let Some(batch) = scheduler.take_immediate_batch() {
+                    let now = Instant::now();
+                    if scheduler.next_burst_allowed_at > now {
+                        sleep_until(tokio::time::Instant::now() + (scheduler.next_burst_allowed_at - now)).await;
+                    }
                     if write_logged_batch(&mut writer, &logger, &session_id, &batch).await.is_err() {
                         return;
                     }
@@ -156,6 +160,10 @@ pub(super) async fn scheduler_loop(
 
             _ = slot_tick.tick() => {
                 if let Some(batch) = scheduler.take_slot_batch() {
+                    let now = Instant::now();
+                    if scheduler.next_burst_allowed_at > now {
+                        sleep_until(tokio::time::Instant::now() + (scheduler.next_burst_allowed_at - now)).await;
+                    }
                     if write_logged_batch(&mut writer, &logger, &session_id, &batch).await.is_err() {
                         return;
                     }
@@ -176,6 +184,9 @@ pub(super) async fn scheduler_loop(
                     }
                     SchedulerCommand::SetPhase { phase } => {
                         scheduler.set_phase(phase);
+                    }
+                    SchedulerCommand::UpdateBurstPacing { next_allowed } => {
+                        scheduler.next_burst_allowed_at = next_allowed;
                     }
                     SchedulerCommand::StResponseReceived => {
                         if let Some(rtt_ms) = scheduler.st_sync.last_sent_at.map(|sent_at| sent_at.elapsed().as_millis() as u32) {

@@ -123,13 +123,26 @@ pub(super) async fn walk_to_map_cancellable(
         };
         last_direction = direction;
 
+        let dy = (current.1 as i32) - (previous.1 as i32);
+        let (start_anim, target_anim) = if dy > 0 {
+            // Moving DOWN in map coords = falling in world
+            (movement::ANIM_START_FALL, movement::ANIM_FALL)
+        } else if dy < 0 {
+            // Moving UP in map coords = jumping in world
+            (movement::ANIM_JUMP, movement::ANIM_JUMP)
+        } else {
+            // Horizontal (walking).
+            (movement::ANIM_WALK, movement::ANIM_WALK)
+        };
+
         move_to_map(
             state,
             outbound_tx,
             current.0,
             current.1,
             direction,
-            movement::ANIM_WALK,
+            start_anim,
+            target_anim,
         )
         .await?;
         sleep(tutorial::walk_step_pause()).await;
@@ -190,6 +203,7 @@ pub(super) async fn walk_predefined_path(
             map_x,
             map_y,
             direction,
+            movement::ANIM_WALK,
             movement::ANIM_WALK,
         )
         .await?;
@@ -403,8 +417,8 @@ pub(super) async fn next_manual_step(
     let (dx, dy, facing_direction) = match direction {
         "left" => (-1, 0, movement::DIR_LEFT),
         "right" => (1, 0, movement::DIR_RIGHT),
-        "up" => (0, 1, current_facing_direction(&state)),
-        "down" => (0, -1, current_facing_direction(&state)),
+        "up" => (0, -1, current_facing_direction(&state)),
+        "down" => (0, 1, current_facing_direction(&state)),
         _ => return Err(format!("unsupported movement direction: {direction}")),
     };
 
@@ -535,7 +549,8 @@ pub(super) async fn move_to_map(
     map_x: i32,
     map_y: i32,
     direction: i32,
-    anim: i32,
+    start_anim: i32,
+    target_anim: i32,
 ) -> Result<(), String> {
     let (world_x, world_y) = {
         let mut state = state.write().await;
@@ -547,20 +562,14 @@ pub(super) async fn move_to_map(
         state.current_direction = direction;
         (world_x, world_y)
     };
-    // Declare the step to the server (once per step).
-    send_doc_before_generated(outbound_tx, protocol::make_map_point(map_x, map_y)).await?;
-    // Hand position to the scheduler so movement updates continue while walking.
-    send_scheduler_cmd(
-        outbound_tx,
-        SchedulerCommand::UpdateMovement {
-            world_x,
-            world_y,
-            is_moving: anim != movement::ANIM_IDLE,
-            anim,
-            direction,
-        },
-    )
-    .await
+    // Send mp and mP together in an exclusive batch to ensure they are processed
+    // as a single atomic movement step by the server.
+    let packets = vec![
+        protocol::make_map_point(map_x, map_y),
+        protocol::make_movement_packet(world_x, world_y, target_anim, direction, false),
+    ];
+
+    send_docs_immediate(outbound_tx, packets).await
 }
 
 pub(super) async fn wait_for_map_position(

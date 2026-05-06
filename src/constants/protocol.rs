@@ -1,5 +1,7 @@
+pub const PACKET_ID_SERVER_SLEEP: &str = "SSlp";
 pub const PACKET_ID_VCHK: &str = "VChk";
 pub const PACKET_ID_GPD: &str = "GPd";
+pub const PACKET_ID_PUNCH: &str = "p";
 pub const PACKET_ID_ST: &str = "ST";
 pub const PACKET_ID_KEEPALIVE: &str = "p";
 pub const PACKET_ID_LEAVE_WORLD: &str = "LW";
