@@ -562,14 +562,23 @@ pub(super) async fn move_to_map(
         state.current_direction = direction;
         (world_x, world_y)
     };
+    let user_id = {
+        let state = state.read().await;
+        state.user_id.clone()
+    };
     // Send mp and mP together in an exclusive batch to ensure they are processed
     // as a single atomic movement step by the server.
+    let mut mP = protocol::make_movement_packet(world_x, world_y, target_anim, direction, false);
+    if let Some(u) = user_id {
+        mP.insert("U", u);
+    }
+    // Real client sends exactly mc:2 — just mp + mP. No ST, no from-position.
     let packets = vec![
         protocol::make_map_point(map_x, map_y),
-        protocol::make_movement_packet(world_x, world_y, target_anim, direction, false),
+        mP,
     ];
 
-    send_docs_immediate(outbound_tx, packets).await
+    send_docs_exclusive(outbound_tx, packets).await
 }
 
 pub(super) async fn wait_for_map_position(

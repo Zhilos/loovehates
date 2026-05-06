@@ -13,6 +13,7 @@ use crate::logging::Logger;
 use crate::models::{BotTarget, SessionStatus};
 use crate::protocol;
 
+use super::movement::move_to_map;
 use super::network::{send_doc, send_docs, send_docs_exclusive};
 use super::publish_state_snapshot;
 use super::state::{InventoryEntry, OutboundHandle, SessionState};
@@ -185,7 +186,16 @@ pub(super) async fn record_action(state: &Arc<RwLock<SessionState>>, hint: Strin
     st.last_action_at = Some(Instant::now());
 }
 
-pub(super) async fn automine_loop(
+pub fn get_collectables_on(state: &super::state::SessionState, map_x: i32, map_y: i32) -> Vec<i32> {
+    state
+        .collectables
+        .values()
+        .filter(|c| c.map_x == map_x && c.map_y == map_y && state.collect_cooldowns.can_collect(c.collectable_id))
+        .map(|c| c.collectable_id)
+        .collect()
+}
+
+pub(crate) async fn run_automine_loop(
     _session_id: &str,
     _logger: &Logger,
     state: &Arc<RwLock<SessionState>>,
@@ -296,19 +306,7 @@ pub(super) async fn automine_loop(
                 }
 
                 if world_width == 0 {
-                    // World data not loaded yet, send a movement packet to stay alive
-                    if is_in_mine {
-
-                        let user_id = state.read().await.user_id.clone();
-                        let (pwx, pwy) = protocol::map_to_world(player_x as f64, player_y as f64);
-                        let move_pkts = protocol::burst::make_movement_step(
-                            pwx, pwy, pwx, pwy,
-                            player_x, player_y,
-                            movement::ANIM_IDLE, movement::ANIM_IDLE, movement::DIR_LEFT,
-                            user_id.as_deref(),
-                        );
-                        let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
-                    }
+                    // World data not loaded yet — scheduler sends mp+p idle heartbeat automatically.
                     continue;
                 }
 
@@ -591,29 +589,25 @@ pub(super) async fn automine_loop(
                                             continue;
                                         }
 
-                                        let user_id = state.read().await.user_id.clone();
-                                        let (player_wx, player_wy) = protocol::map_to_world(player_x as f64, player_y as f64);
-                                        let dx = (next_step.0 as i32) - (player_x as i32);
-                                        let dy = (next_step.1 as i32) - (player_y as i32);
-                                        let hit_anim = if dy != 0 {
-                                            // Vertical transition (jump/fall): standard hit (6)
-                                            movement::ANIM_HIT
-                                        } else if dx != 0 {
-                                            // Horizontal walk-mine: hit-move (7)
-                                            movement::ANIM_HIT_MOVE
-                                        } else {
-                                            movement::ANIM_HIT
+                                        let (target_wx, target_wy) = protocol::map_to_world(next_step.0 as f64, next_step.1 as f64);
+                                        let collect_cids = {
+                                            let st = state.read().await;
+                                            get_collectables_on(&st, next_step.0, next_step.1)
                                         };
-
-                                        let pkts = protocol::burst::make_mining_burst(
-                                            player_wx, player_wy,
+                                        let pkts = protocol::burst::make_move_mine_burst(
                                             next_step.0, next_step.1,
-                                            3,
-                                            user_id.as_deref(),
+                                            target_wx, target_wy,
                                             dir,
-                                            hit_anim,
+                                            3,
+                                            &collect_cids,
                                         );
                                         let _ = send_docs_exclusive(outbound_tx, pkts).await;
+                                        if !collect_cids.is_empty() {
+                                            let mut st = state.write().await;
+                                            for &cid in &collect_cids {
+                                                st.collect_cooldowns.mark_collected(cid);
+                                            }
+                                        }
                                         current_anim = movement::ANIM_IDLE;
                                         record_action(state, format!("mine+move from ({player_x},{player_y}) hit ({},{})", next_step.0, next_step.1)).await;
                                         hit_this_tick = Some((next_step.0, next_step.1));
@@ -649,16 +643,17 @@ pub(super) async fn automine_loop(
  
                                          current_anim = target_anim;
 
-                                        let user_id = state.read().await.user_id.clone();
-                                        let (from_wx, from_wy) = protocol::map_to_world(player_x as f64, player_y as f64);
-                                        let (to_wx, to_wy) = protocol::map_to_world(next_step.0 as f64, next_step.1 as f64);
-                                        let move_pkts = protocol::burst::make_movement_step(
-                                            from_wx, from_wy, to_wx, to_wy,
-                                            next_step.0, next_step.1,
-                                            start_anim, target_anim, dir,
-                                            user_id.as_deref(),
-                                        );
-                                        let _ = send_docs_exclusive(outbound_tx, move_pkts).await;
+                                        let (start_anim, target_anim) = (start_anim, target_anim); // Keep for logging
+                                        move_to_map(
+                                            state,
+                                            outbound_tx,
+                                            next_step.0,
+                                            next_step.1,
+                                            dir,
+                                            start_anim,
+                                            target_anim,
+                                        ).await?;
+                                        current_anim = target_anim;
                                         record_action(state, format!("move from ({player_x},{player_y}) to ({},{}) anim={}->{}", next_step.0, next_step.1, start_anim, target_anim)).await;
 
                                         {
@@ -695,17 +690,22 @@ pub(super) async fn automine_loop(
                                                     continue;
                                                 }
 
-                                                let user_id = state.read().await.user_id.clone();
-                                                let (player_wx, player_wy) = protocol::map_to_world(next_step.0 as f64, next_step.1 as f64);
-                                                let hit_pkts = protocol::burst::make_mining_burst(
-                                                    player_wx, player_wy,
+                                                let collect_cids = {
+                                                    let st = state.read().await;
+                                                    get_collectables_on(&st, target_x, target_y)
+                                                };
+                                                let hit_pkts = protocol::burst::make_stationary_hit(
                                                     target_x, target_y,
                                                     3,
-                                                    user_id.as_deref(),
-                                                    dir,
-                                                    movement::ANIM_HIT,
+                                                    &collect_cids,
                                                 );
                                                 let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
+                                                if !collect_cids.is_empty() {
+                                                    let mut st = state.write().await;
+                                                    for &cid in &collect_cids {
+                                                        st.collect_cooldowns.mark_collected(cid);
+                                                    }
+                                                }
                                                 current_anim = movement::ANIM_IDLE;
                                                 record_action(state, format!("stationary hit at ({target_x},{target_y})")).await;
                                                 hit_this_tick = Some((target_x, target_y));
@@ -742,17 +742,22 @@ pub(super) async fn automine_loop(
                                             continue;
                                         }
 
-                                        let user_id = state.read().await.user_id.clone();
-                                        let (player_wx, player_wy) = protocol::map_to_world(player_x as f64, player_y as f64);
-                                        let hit_pkts = protocol::burst::make_mining_burst(
-                                            player_wx, player_wy,
+                                        let collect_cids = {
+                                            let st = state.read().await;
+                                            get_collectables_on(&st, target_x, target_y)
+                                        };
+                                        let hit_pkts = protocol::burst::make_stationary_hit(
                                             target_x, target_y,
                                             3,
-                                            user_id.as_deref(),
-                                            dir,
-                                            movement::ANIM_HIT,
+                                            &collect_cids,
                                         );
                                         let _ = send_docs_exclusive(outbound_tx, hit_pkts).await;
+                                        if !collect_cids.is_empty() {
+                                            let mut st = state.write().await;
+                                            for &cid in &collect_cids {
+                                                st.collect_cooldowns.mark_collected(cid);
+                                            }
+                                        }
                                         current_anim = movement::ANIM_IDLE;
                                         record_action(state, format!("stationary hit at ({target_x},{target_y}) from ({player_x},{player_y})")).await;
                                         hit_this_tick = Some((target_x, target_y));

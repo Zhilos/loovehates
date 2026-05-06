@@ -317,29 +317,21 @@ impl SchedulerState {
                 }
             }
             SchedulerPhase::WorldIdle => {
-                batch.push(protocol::make_movement_packet(
-                    self.movement.world_x,
-                    self.movement.world_y,
-                    self.movement.anim,
-                    self.movement.direction,
-                    false,
-                ));
+                // Real client sends mp (bare, no pM) + p (keepalive) when idle.
+                // Never send mP when stationary — the server treats that as a physics event.
+                batch.push(protocol::make_map_point_bare());
+                batch.push(protocol::make_keepalive());
                 if self.st_due {
-                    batch.push(protocol::make_st());
+                    // ST goes in its own exclusive slot, not merged with idle heartbeat.
                     self.st_due = false;
                 }
             }
             SchedulerPhase::WorldMoving => {
-                batch.push(protocol::make_movement_packet(
-                    self.movement.world_x,
-                    self.movement.world_y,
-                    self.movement.anim,
-                    self.movement.direction,
-                    false,
-                ));
+                // Movement packets are sent explicitly via Exclusive batches from move_to_map.
+                // The scheduler should NOT generate any movement packet here to avoid
+                // sending duplicate mP packets that confuse the server.
                 batch.extend(after_generated);
                 if self.st_due {
-                    batch.push(protocol::make_st());
                     self.st_due = false;
                 }
             }
@@ -349,7 +341,7 @@ impl SchedulerState {
     }
 
     pub(super) fn on_batch_sent(&mut self, batch: &[Document]) -> bool {
-        let sent_st = batch.iter().any(|doc| packet_id(doc) == ids::PACKET_ID_ST);
+        let sent_st = batch.iter().any(|doc| packet_id(doc) == ids::PACKET_ID_SI);
         if sent_st {
             self.st_sync.last_sent_at = Some(std::time::Instant::now());
         }

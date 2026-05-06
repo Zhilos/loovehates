@@ -1,9 +1,9 @@
-//! mc:N burst bundles matching the official PixelWorlds client's voice.
+//! Captured patterns (from real client traffic):
 //!
-//! Captured patterns:
-//! - Mining: mP (header) + N×HB + p (footer)
-//! - Combat: mP (header) + N×HA + ST (footer)
-//! - Movement: mp (binary point) + mP (with U field)
+//! Stationary mining:  mp (bare, no pM) + HB          [mc:2 per hit]
+//! Move+mine:          mp (pM binary) + mP (a:7) + HB  [mc:3]
+//! Combat:             mP (a:6) + HAI×N                [mc:N+1]
+//! Movement:           mp (pM binary) + mP             [mc:2]
 
 use bson::Document;
 
@@ -11,43 +11,59 @@ use crate::constants::movement;
 use crate::constants::protocol as ids;
 
 use super::{
-    csharp_ticks, make_hit_ai_enemy, make_hit_block, make_map_point, make_movement_packet,
-    make_st,
+    csharp_ticks, make_collectable_request, make_hit_ai_enemy, make_hit_block, make_map_point,
+    make_map_point_bare, make_movement_packet,
 };
 
-/// Build a mining burst: mP header + N×HB + p footer (mc:5 when n_hits=3).
-pub fn make_mining_burst(
-    player_world_x: f64,
-    player_world_y: f64,
+/// Stationary mining hit: mp (bare, no pM) + N×HB [+ optional collect requests].
+/// Use when the bot is already adjacent to the target and not moving.
+pub fn make_stationary_hit(
     target_map_x: i32,
     target_map_y: i32,
     n_hits: u32,
-    user_id: Option<&str>,
-    direction: i32,
-    anim: i32,
+    collectables: &[i32],
 ) -> Vec<Document> {
-    let mut burst =
-        Vec::with_capacity((n_hits as usize) + 2);
-    let mut header = make_movement_packet(
-        player_world_x,
-        player_world_y,
-        anim,
-        direction,
-        false,
-    );
-    if let Some(u) = user_id {
-        header.insert("U", u.to_string());
-    }
-    burst.push(header);
-    burst.push(make_map_point(target_map_x, target_map_y));
+    let mut burst = Vec::with_capacity(1 + (n_hits as usize) + collectables.len());
+    burst.push(make_map_point_bare());
     for _ in 0..n_hits {
         burst.push(make_hit_block(target_map_x, target_map_y));
     }
-    burst.push(make_st());
+    for &cid in collectables {
+        burst.push(make_collectable_request(cid));
+    }
     burst
 }
 
-/// Build a combat burst: mP header + N×HA + ST footer.
+/// Move+mine burst: mp (pM of target) + mP (a:7 HitMove, at target world pos) + N×HB [+ optional collect requests].
+/// Use when the bot steps INTO the target tile while swinging.
+pub fn make_move_mine_burst(
+    target_map_x: i32,
+    target_map_y: i32,
+    target_world_x: f64,
+    target_world_y: f64,
+    direction: i32,
+    n_hits: u32,
+    collectables: &[i32],
+) -> Vec<Document> {
+    let mut burst = Vec::with_capacity(2 + (n_hits as usize) + collectables.len());
+    burst.push(make_map_point(target_map_x, target_map_y));
+    burst.push(make_movement_packet(
+        target_world_x,
+        target_world_y,
+        movement::ANIM_HIT_MOVE,
+        direction,
+        false,
+    ));
+    for _ in 0..n_hits {
+        burst.push(make_hit_block(target_map_x, target_map_y));
+    }
+    for &cid in collectables {
+        burst.push(make_collectable_request(cid));
+    }
+    burst
+}
+
+/// Build a combat burst: mP (a:6) + N×HAI.
 pub fn make_combat_burst(
     player_world_x: f64,
     player_world_y: f64,
@@ -58,7 +74,7 @@ pub fn make_combat_burst(
     user_id: Option<&str>,
     direction: i32,
 ) -> Vec<Document> {
-    let mut burst = Vec::with_capacity((n_hits as usize) + 2);
+    let mut burst = Vec::with_capacity((n_hits as usize) + 1);
     let mut header = make_movement_packet(
         player_world_x,
         player_world_y,
@@ -70,43 +86,12 @@ pub fn make_combat_burst(
         header.insert("U", u.to_string());
     }
     burst.push(header);
-    burst.push(make_map_point(target_map_x, target_map_y));
     for _ in 0..n_hits {
         burst.push(make_hit_ai_enemy(target_map_x, target_map_y, ai_id));
     }
-    burst.push(bson::doc! { "ID": ids::PACKET_ID_PUNCH });
-    burst.push(make_st());
     burst
 }
 
-/// Build a movement step: mp (binary point) + mP (with U field).
-pub fn make_movement_step(
-    from_world_x: f64,
-    from_world_y: f64,
-    to_world_x: f64,
-    to_world_y: f64,
-    to_map_x: i32,
-    to_map_y: i32,
-    start_anim: i32,
-    target_anim: i32,
-    direction: i32,
-    user_id: Option<&str>,
-) -> Vec<Document> {
-    let mut mP_from = make_movement_packet(from_world_x, from_world_y, start_anim, direction, false);
-    if let Some(u) = user_id {
-        mP_from.insert("U", u.to_string());
-    }
-    let mut mP_to = make_movement_packet(to_world_x, to_world_y, target_anim, direction, false);
-    if let Some(u) = user_id {
-        mP_to.insert("U", u.to_string());
-    }
-    vec![
-        mP_from,
-        make_map_point(to_map_x, to_map_y),
-        mP_to,
-        make_st(),
-    ]
-}
 
 /// C# DateTime.UtcNow.Ticks alias for callers that want a fresh timestamp
 /// without importing the parent module's helper.

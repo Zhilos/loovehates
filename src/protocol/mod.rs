@@ -8,12 +8,17 @@ use crate::constants::{movement, network, protocol as ids};
 
 pub mod burst;
 
+use std::sync::atomic::{AtomicI64, Ordering};
+
+pub static CLOCK_OFFSET: AtomicI64 = AtomicI64::new(0);
+
 pub fn csharp_ticks() -> i64 {
     let unix_ticks = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_secs_f64())
         .unwrap_or_default();
-    (unix_ticks * 10_000_000.0) as i64 + 621_355_968_000_000_000
+    let local_ticks = (unix_ticks * 10_000_000.0) as i64 + 621_355_968_000_000_000;
+    local_ticks + CLOCK_OFFSET.load(Ordering::Relaxed)
 }
 
 pub fn wrap_batch(messages: &[Document]) -> Document {
@@ -195,15 +200,22 @@ pub fn make_gpd(jwt: &str) -> Document {
     }
 }
 
+/// Client → server sync response. The server sends "ST", we reply with "SI".
 pub fn make_st() -> Document {
     doc! {
-        "ID": ids::PACKET_ID_ST,
+        "ID": ids::PACKET_ID_SI,
         "T": csharp_ticks(),
     }
 }
 
 pub fn make_keepalive() -> Document {
     doc! { "ID": ids::PACKET_ID_KEEPALIVE }
+}
+
+/// Bare mp packet with no pM field — sent as the first packet in the idle heartbeat
+/// (mp + p). The real client omits pM when not changing position.
+pub fn make_map_point_bare() -> Document {
+    doc! { "ID": ids::PACKET_ID_MAP_POINT }
 }
 
 pub fn make_empty_movement() -> Document {

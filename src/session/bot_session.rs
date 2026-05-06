@@ -31,7 +31,7 @@ use crate::pathfinding::astar;
 use crate::protocol;
 use crate::world;
 
-use super::automine::{self, automine_loop};
+use super::automine::{self, run_automine_loop};
 use super::autonether;
 use super::fishing::{fishing_loop, stop_fishing_game};
 use super::movement::{
@@ -1137,7 +1137,7 @@ impl BotSession {
                         let logger = self.logger.clone();
                         let session_id = self.id.clone();
                         tokio::spawn(async move {
-                            if let Err(error) = automine::automine_loop(
+                            if let Err(error) = automine::run_automine_loop(
                                 &session_id,
                                 &logger,
                                 &state,
@@ -1409,6 +1409,17 @@ impl BotSession {
         let id = message.get_str("ID").unwrap_or_default();
         match id {
             ids::PACKET_ID_ST => {
+                if let Ok(server_ticks) = message.get_i64("T") {
+                    let local_ticks = {
+                        let unix_ticks = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|value| value.as_secs_f64())
+                            .unwrap_or_default();
+                        (unix_ticks * 10_000_000.0) as i64 + 621_355_968_000_000_000
+                    };
+                    let offset = server_ticks - local_ticks;
+                    protocol::CLOCK_OFFSET.store(offset, std::sync::atomic::Ordering::Relaxed);
+                }
                 let _ = send_scheduler_cmd(
                     &runtime.outbound_tx,
                     SchedulerCommand::StResponseReceived,
