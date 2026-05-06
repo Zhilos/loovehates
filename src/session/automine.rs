@@ -207,8 +207,24 @@ pub(crate) async fn run_automine_loop(
                 base_delay + jitter
             }
         };
-        let sleep_duration = (last_tick + Duration::from_millis(dynamic_delay as u64))
-            .saturating_duration_since(Instant::now());
+        let (player_x, player_y, current_is_air, below_is_air) = {
+            let st = state.read().await;
+            let px = st.player_position.map_x.unwrap_or(0.0) as i32;
+            let py = st.player_position.map_y.unwrap_or(0.0) as i32;
+            let current_tile = st.world_foreground_tiles.get((py as u32 * st.world.as_ref().map(|w| w.width).unwrap_or(0) + px as u32) as usize).copied().unwrap_or(0);
+            let below_tile = st.world_foreground_tiles.get(((py + 1) as u32 * st.world.as_ref().map(|w| w.width).unwrap_or(0) + px as u32) as usize).copied().unwrap_or(0);
+            (px, py, crate::pathfinding::astar::is_walkable_tile(current_tile), crate::pathfinding::astar::is_walkable_tile(below_tile))
+        };
+
+        let is_falling = current_is_air && below_is_air;
+        let sleep_duration = if is_falling {
+            // If we are in mid-air, we MUST fall immediately to prevent physics kicks.
+            // No delay, just keep falling until we hit ground.
+            Duration::from_millis(10)
+        } else {
+            (last_tick + Duration::from_millis(dynamic_delay as u64))
+                .saturating_duration_since(Instant::now())
+        };
 
         tokio::select! {
             _ = stop_rx.changed() => {

@@ -429,11 +429,6 @@ pub fn make_mine_hit_portal_sandwich(
 pub fn make_move_to_map_point(player_x: i32, player_y: i32, map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
     let _ = (player_x, player_y);
     let (world_x, world_y) = map_to_world(map_x as f64, map_y as f64);
-    // Restored from commit 6fa372b — mc:3 shape that the user confirmed
-    // worked. Both mP packets land at the DESTINATION position (not at the
-    // old/new pair); the IDLE prelude declares "I'm at destination, idle"
-    // immediately followed by "I'm at destination, <walk_anim>". The mp
-    // map-point sits between them. No ST.
     vec![
         make_movement_packet(world_x, world_y, movement::ANIM_IDLE, direction, false),
         make_map_point(map_x, map_y),
@@ -785,7 +780,7 @@ pub fn make_fishing_cleanup_action() -> Document {
 pub fn map_to_world(map_x: f64, map_y: f64) -> (f64, f64) {
     (
         map_x * movement::TILE_WIDTH,
-        map_y * movement::TILE_HEIGHT,
+        map_y * movement::TILE_HEIGHT + (0.5 * movement::TILE_HEIGHT),
     )
 }
 

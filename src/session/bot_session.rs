@@ -2164,6 +2164,11 @@ impl BotSession {
         let mx = message.get_i32("x").ok().unwrap_or_else(|| mx_calc.floor() as i32);
         let my = message.get_i32("y").ok().unwrap_or_else(|| my_calc.floor() as i32);
 
+        self.logger.info("session", Some(&self.id), format!(
+            "NUGGET DEBUG: ID={} RawPos=({:.4}, {:.4}) CalcMap=({:.2}, {:.2}) FinalMap=({}, {}) PktX={:?} PktY={:?}",
+            collectable_id, pos_x, pos_y, mx_calc, my_calc, mx, my, message.get("x"), message.get("y")
+        ));
+
         let mut collectable = CollectableState {
             collectable_id,
             block_type: message.get_i32("BlockType").unwrap_or_default(),

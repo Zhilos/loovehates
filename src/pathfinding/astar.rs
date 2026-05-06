@@ -105,7 +105,22 @@ pub fn find_tile_path(
     goal: (i32, i32),
 ) -> Option<Vec<(i32, i32)>> {
     find_path(width, height, start, goal, |x, y| {
-        tile_at(tiles, width, height, x, y).and_then(get_tile_cost)
+        let tile = tile_at(tiles, width, height, x, y)?;
+        let mut cost = get_tile_cost(tile)?;
+        
+        // Gravity Penalty: If we are in air, check if there is ground below us.
+        // If not, horizontal movement should be much more "expensive" to
+        // encourage the bot to fall to a solid surface before walking.
+        if is_walkable_tile(tile) {
+            let below = tile_at(tiles, width, height, x, y + 1).unwrap_or(0);
+            if is_walkable_tile(below) {
+                // We are floating! Add a massive penalty to horizontal movement
+                // to force the pathfinder to look for a way down.
+                cost += 50;
+            }
+        }
+        
+        Some(cost)
     })
 }
 
@@ -115,18 +130,19 @@ pub fn get_tile_cost(tile_id: u16) -> Option<u32> {
     } else if matches!(tile_id, 4103 | 3 | 3987 | 3988 | 3990 | 3993) {
         None // Bedrock, Lava, and boundaries are impassable
     } else {
-        // Breakable blocks have higher cost so the bot prefers open paths but can mine through if necessary.
+        // Breakable blocks have EXTREMELY high cost so the bot ONLY mines
+        // if there is absolutely no walkable path (even across air gaps).
         let cost = match tile_id {
             0..=3 => 1,
             // Mine Crystals
-            3974..=3979 => 2,
+            3974..=3979 => 1000,
             // Mine Soils
-            3980..=3984 => 3,
+            3980..=3984 => 1500,
             // Mine Rocks
-            3985..=3986 | 3989 | 3991 | 3992 => 5,
+            3985..=3986 | 3989 | 3991 | 3992 => 2000,
             // Mine Gemstones
-            3995..=4003 => 4,
-            _ => 10,
+            3995..=4003 => 1200,
+            _ => 5000,
         };
         Some(cost)
     }
@@ -153,27 +169,13 @@ fn heuristic(from: (i32, i32), to: (i32, i32)) -> u32 {
 }
 
 fn neighbors(width: usize, height: usize, position: (i32, i32)) -> [(i32, i32); 4] {
-    let left = if position.0 > 0 {
-        (position.0 - 1, position.1)
-    } else {
-        position
-    };
-    let right = if position.0 + 1 < width as i32 {
-        (position.0 + 1, position.1)
-    } else {
-        position
-    };
-    let down = if position.1 > 0 {
-        (position.0, position.1 - 1)
-    } else {
-        position
-    };
-    let up = if position.1 + 1 < height as i32 {
-        (position.0, position.1 + 1)
-    } else {
-        position
-    };
-    [left, right, down, up]
+    let x = position.0;
+    let y = position.1;
+    let left = if x > 0 { (x - 1, y) } else { position };
+    let right = if x + 1 < width as i32 { (x + 1, y) } else { position };
+    let up = if y > 0 { (x, y - 1) } else { position }; // y-1 is higher
+    let down = if y + 1 < height as i32 { (x, y + 1) } else { position }; // y+1 is lower
+    [left, right, up, down]
 }
 
 fn reconstruct_path(
