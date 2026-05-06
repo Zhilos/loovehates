@@ -1392,101 +1392,108 @@ function App() {
                                 <Gear className="size-3.5" />
                                 Inventory Storage
                               </div>
-                              <div className="flex flex-wrap gap-2">
-                              {session.inventory.length ? (
-                                session.inventory.map((item) => {
-                                  const blockName = blockNames[String(item.block_id)]
-                                  const label =
-                                    blockName && blockName !== "None"
-                                      ? camelToWords(blockName)
-                                      : `#${item.block_id}`
-                                  return (
-                                    <div
-                                      key={`${session.id}-${item.block_id}-${item.inventory_type}`}
-                                      className="grid min-w-[92px] flex-1 gap-1 rounded-xl border border-white/10 bg-white/4 p-2.5 text-center sm:min-w-[110px] sm:flex-none sm:p-3"
-                                    >
-                                      <TileSprite
-                                        blockId={item.block_id}
-                                        size={40}
-                                        className="mx-auto"
-                                        fallback={<span className="text-[9px] text-muted-foreground">?</span>}
-                                      />
-                                      <div className="font-mono text-[11px] text-muted-foreground">
-                                        #{item.block_id}
-                                      </div>
-                                      <div className="text-xs font-medium">{label}</div>
-                                      <div className="text-lg font-semibold text-cyan-300">
-                                        x{item.amount}
-                                      </div>
-                                      <div className="text-[11px] text-muted-foreground">
-                                        {getItemCategory(blockName, inventoryTypeLabel(item.inventory_type))}
-                                      </div>
-                                      {CLOTHING_TYPES.has(item.inventory_type) ? (
-                                        <div className="grid grid-cols-2 gap-2">
-                                          <Button
-                                            size="xs"
-                                            variant="outline"
-                                            className="rounded-lg border-white/10 bg-white/5"
-                                            onClick={() =>
-                                              void runAction(() =>
-                                                wearItem(session.id, item.block_id, true),
-                                              )
-                                            }
-                                          >
-                                            Wear
-                                          </Button>
-                                          <Button
-                                            size="xs"
-                                            variant="outline"
-                                            className="rounded-lg border-white/10 bg-white/5"
-                                            onClick={() =>
-                                              void runAction(() =>
-                                                wearItem(session.id, item.block_id, false),
-                                              )
-                                            }
-                                          >
-                                            Off
-                                          </Button>
+                              <div className="max-h-[500px] overflow-y-auto pr-1 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+                                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                                {session.inventory.length ? (
+                                  session.inventory.map((item) => {
+                                    const blockName = blockNames[String(item.block_id)]
+                                    const label =
+                                      blockName && blockName !== "None"
+                                        ? camelToWords(blockName)
+                                        : `#${item.block_id}`
+                                    const category = getItemCategory(blockName, inventoryTypeLabel(item.inventory_type));
+                                    
+                                    return (
+                                      <div
+                                        key={`${session.id}-${item.block_id}-${item.inventory_type}`}
+                                        className="group relative flex flex-col items-center justify-between rounded-xl border border-white/5 bg-white/2 p-2 transition-all hover:bg-white/5 hover:border-primary/30"
+                                        title={`${label} (${category})`}
+                                      >
+                                        <div className="absolute top-1 right-1 z-10 rounded-md bg-primary/20 px-1 py-0.5 text-[9px] font-bold text-primary ring-1 ring-primary/30 backdrop-blur-md">
+                                          x{item.amount}
                                         </div>
-                                      ) : null}
-                                      <div className="flex gap-1">
-                                        <Input
-                                          className="h-6 min-w-0 flex-1 rounded-lg border-white/10 bg-white/5 px-1.5 text-center text-xs"
-                                          type="number"
-                                          min={1}
-                                          max={item.amount}
-                                          value={dropAmounts[`${session.id}-${item.block_id}-${item.inventory_type}`] ?? "1"}
-                                          onChange={(e) => {
-                                            const key = `${session.id}-${item.block_id}-${item.inventory_type}`
-                                            setDropAmounts((prev) => ({ ...prev, [key]: e.target.value }))
-                                          }}
-                                        />
-                                        <Button
-                                          size="xs"
-                                          variant="outline"
-                                          className="rounded-lg border-white/10 bg-white/5"
-                                          onClick={() => {
-                                            const key = `${session.id}-${item.block_id}-${item.inventory_type}`
-                                            const amt = Math.max(1, Math.min(item.amount, parseInt(dropAmounts[key] ?? "1", 10) || 1))
-                                            void runAction(() =>
-                                              dropItem(session.id, item.block_id, item.inventory_type, amt),
-                                            )
-                                          }}
-                                        >
-                                          Drop
-                                        </Button>
+                                        <div className="py-1">
+                                          <TileSprite
+                                            blockId={item.block_id}
+                                            size={32}
+                                            className="drop-shadow-[0_0_8px_rgba(var(--primary-rgb),0.3)]"
+                                            fallback={<span className="text-[9px] text-muted-foreground">?</span>}
+                                          />
+                                        </div>
+                                        <div className="w-full text-center">
+                                          <div className="truncate text-[9px] font-medium leading-tight opacity-70 group-hover:opacity-100">
+                                            {label}
+                                          </div>
+                                        </div>
+                                        <div className="mt-1.5 w-full space-y-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100">
+                                          {CLOTHING_TYPES.has(item.inventory_type) || category === "weapon" || inventoryTypeLabel(item.inventory_type) === "fishing" ? (
+                                            <div className="grid grid-cols-2 gap-1">
+                                              <Button
+                                                size="xs"
+                                                variant="outline"
+                                                className="h-5 rounded-md border-white/5 bg-white/5 p-0 text-[8px] hover:bg-primary/20"
+                                                onClick={() =>
+                                                  void runAction(() =>
+                                                    wearItem(session.id, item.block_id, true),
+                                                  )
+                                                }
+                                              >
+                                                Wear
+                                              </Button>
+                                              <Button
+                                                size="xs"
+                                                variant="outline"
+                                                className="h-5 rounded-md border-white/5 bg-white/5 p-0 text-[8px] hover:bg-rose-500/20"
+                                                onClick={() =>
+                                                  void runAction(() =>
+                                                    wearItem(session.id, item.block_id, false),
+                                                  )
+                                                }
+                                              >
+                                                Off
+                                              </Button>
+                                            </div>
+                                          ) : null}
+                                          <div className="flex gap-1">
+                                            <input
+                                              className="h-5 w-8 min-w-0 rounded-md border border-white/5 bg-black/40 text-center text-[9px] focus:outline-none focus:ring-1 focus:ring-primary/30"
+                                              type="number"
+                                              min={1}
+                                              max={item.amount}
+                                              value={dropAmounts[`${session.id}-${item.block_id}-${item.inventory_type}`] ?? "1"}
+                                              onChange={(e) => {
+                                                const key = `${session.id}-${item.block_id}-${item.inventory_type}`
+                                                setDropAmounts((prev) => ({ ...prev, [key]: e.target.value }))
+                                              }}
+                                            />
+                                            <Button
+                                              size="xs"
+                                              variant="outline"
+                                              className="h-5 flex-1 rounded-md border-white/5 bg-white/5 p-0 text-[8px] hover:bg-rose-500/20"
+                                              onClick={() => {
+                                                const key = `${session.id}-${item.block_id}-${item.inventory_type}`
+                                                const amt = Math.max(1, Math.min(item.amount, parseInt(dropAmounts[key] ?? "1", 10) || 1))
+                                                void runAction(() =>
+                                                  dropItem(session.id, item.block_id, item.inventory_type, amt),
+                                                )
+                                              }}
+                                            >
+                                              Drop
+                                            </Button>
+                                          </div>
+                                        </div>
                                       </div>
-                                    </div>
-                                  )
-                                })
-                              ) : (
-                                <div className="rounded-xl border border-dashed border-white/10 px-4 py-5 text-xs text-muted-foreground">
-                                  Inventory empty.
+                                    )
+                                  })
+                                ) : (
+                                  <div className="col-span-full rounded-xl border border-dashed border-white/10 px-4 py-8 text-center text-xs text-muted-foreground">
+                                    Inventory empty.
+                                  </div>
+                                )}
                                 </div>
-                              )}
+                              </div>
                             </div>
                           </div>
-                        </div>
                         </CardContent>
                       </Card>
                     </TabsContent>
