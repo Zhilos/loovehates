@@ -44,18 +44,42 @@ pub fn find_best_bot_target(
 
     // Collectibles (items on the floor) and gemstones (blocks in walls) are
     // ranked equally — nearest reachable target wins.
+    //
+    // Items rest ON TOP of the floor tile, so the stored map_y is the SOLID
+    // floor. The bot needs to stand in the air tile ABOVE (map_y - 1) to be
+    // close enough for the server's C proximity check. Aim there if it's
+    // walkable; fall back to the raw position otherwise.
     for (&id, state) in collectables {
         if cooldowns.is_on_cooldown(id) {
             continue;
         }
-        let dx = state.map_x - player_map_x;
-        let dy = state.map_y - player_map_y;
+
+        // Choose the approach tile: prefer one tile above (air), fall back
+        // to raw map position if the above tile is also solid / out of bounds.
+        let approach_x = state.map_x;
+        let approach_y = {
+            let above = state.map_y - 1;
+            if above >= 0 {
+                let idx = (above as u32 * world_width + state.map_x as u32) as usize;
+                let tile = foreground_tiles.get(idx).copied().unwrap_or(0);
+                if crate::pathfinding::astar::is_walkable_tile(tile) {
+                    above
+                } else {
+                    state.map_y
+                }
+            } else {
+                state.map_y
+            }
+        };
+
+        let dx = approach_x - player_map_x;
+        let dy = approach_y - player_map_y;
         let dist_sq = (dx * dx + dy * dy) as u32;
 
         let mut near_enemy = false;
         for enemy in ai_enemies.values() {
-            let e_dx = state.map_x - enemy.map_x;
-            let e_dy = state.map_y - enemy.map_y;
+            let e_dx = approach_x - enemy.map_x;
+            let e_dy = approach_y - enemy.map_y;
             if (e_dx * e_dx + e_dy * e_dy) < (3 * 3) {
                 near_enemy = true;
                 break;
@@ -70,47 +94,49 @@ pub fn find_best_bot_target(
                 crate::models::BotTarget::Collecting {
                     id,
                     block_id: state.block_type as u16,
-                    x: state.map_x,
-                    y: state.map_y,
+                    x: approach_x,
+                    y: approach_y,
                 },
                 dist_sq,
             ));
         }
     }
 
-    // 2. Gemstones (blocks in walls). Gemstones only compete if NO collectable was found.
-    if best_target.is_none() {
-        let search_radius = 60;
-        let min_x = (player_map_x - search_radius).max(0);
-        let max_x = (player_map_x + search_radius).min(world_width as i32 - 1);
-        let min_y = (player_map_y - search_radius).max(0);
-        let max_y = (player_map_y + search_radius).min(world_height as i32 - 1);
+    // 2. Gemstones (blocks in walls). Compete with collectables — nearest wins.
+    // Previously this was gated on `best_target.is_none()` which meant gems
+    // were never targeted as long as ANY collectable existed in the world
+    // (and MINEWORLD seeds 50). Now the gem scan can replace a far-away
+    // collectable when a gem is closer.
+    let search_radius = 60;
+    let min_x = (player_map_x - search_radius).max(0);
+    let max_x = (player_map_x + search_radius).min(world_width as i32 - 1);
+    let min_y = (player_map_y - search_radius).max(0);
+    let max_y = (player_map_y + search_radius).min(world_height as i32 - 1);
 
-        for y in min_y..=max_y {
-            for x in min_x..=max_x {
-                let index = (y as u32 * world_width + x as u32) as usize;
-                if let Some(&block_id) = foreground_tiles.get(index) {
-                    if is_minegem(block_id) {
-                        let dx = x - player_map_x;
-                        let dy = y - player_map_y;
-                        let dist_sq = (dx * dx + dy * dy) as u32;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let index = (y as u32 * world_width + x as u32) as usize;
+            if let Some(&block_id) = foreground_tiles.get(index) {
+                if is_minegem(block_id) {
+                    let dx = x - player_map_x;
+                    let dy = y - player_map_y;
+                    let dist_sq = (dx * dx + dy * dy) as u32;
 
-                        let mut near_enemy = false;
-                        for enemy in ai_enemies.values() {
-                            let e_dx = x - enemy.map_x;
-                            let e_dy = y - enemy.map_y;
-                            if (e_dx * e_dx + e_dy * e_dy) < (3 * 3) {
-                                near_enemy = true;
-                                break;
-                            }
+                    let mut near_enemy = false;
+                    for enemy in ai_enemies.values() {
+                        let e_dx = x - enemy.map_x;
+                        let e_dy = y - enemy.map_y;
+                        if (e_dx * e_dx + e_dy * e_dy) < (3 * 3) {
+                            near_enemy = true;
+                            break;
                         }
-                        if near_enemy {
-                            continue;
-                        }
+                    }
+                    if near_enemy {
+                        continue;
+                    }
 
-                        if best_target.is_none() || dist_sq < best_target.as_ref().unwrap().1 {
-                            best_target = Some((crate::models::BotTarget::Mining { x, y }, dist_sq));
-                        }
+                    if best_target.is_none() || dist_sq < best_target.as_ref().unwrap().1 {
+                        best_target = Some((crate::models::BotTarget::Mining { x, y }, dist_sq));
                     }
                 }
             }

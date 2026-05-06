@@ -388,12 +388,20 @@ pub fn make_mine_hit_stationary(
 ) -> Vec<Document> {
     let (world_x, world_y) = map_to_world(player_x as f64, player_y as f64);
     vec![
-        // Use IDLE instead of HIT to bypass speed checks
+        // Use IDLE instead of HIT to bypass anim/physics check.
         make_movement_packet(world_x, world_y, movement::ANIM_IDLE, direction, false),
+        // Open the position-ack sandwich at the player's tile so the server
+        // sees "I am physically here" before the hits.
+        make_portal_arrive_on(player_x, player_y),
+        make_portal_arrive_in(player_x, player_y),
         // Triple hit
         make_hit_block(hit_x, hit_y),
         make_hit_block(hit_x, hit_y),
         make_hit_block(hit_x, hit_y),
+        // Close the sandwich so the server tags the action with our location.
+        // Without this the server treats the HBs as disembodied → ER=7.
+        make_portal_arrive_on(player_x, player_y),
+        make_portal_arrive_in(player_x, player_y),
         // Sync
         make_st(),
     ]
@@ -427,15 +435,20 @@ pub fn make_mine_hit_portal_sandwich(
 pub fn make_move_to_map_point(player_x: i32, player_y: i32, map_x: i32, map_y: i32, anim: i32, direction: i32) -> Vec<Document> {
     let (old_world_x, old_world_y) = map_to_world(player_x as f64, player_y as f64);
     let (new_world_x, new_world_y) = map_to_world(map_x as f64, map_y as f64);
+    let _ = (old_world_x, old_world_y);
     vec![
-        // 1. Settle at current position
-        make_movement_packet(old_world_x, old_world_y, movement::ANIM_IDLE, direction, false),
-        // 2. State intent to move to new map point
+        // 1. Map-point intent to the destination tile.
         make_map_point(map_x, map_y),
-        // 3. Complete the movement with the requested animation
+        // 2. Movement update with the requested animation at the new world coords.
         make_movement_packet(new_world_x, new_world_y, anim, direction, false),
-        // 4. Sync clock
-        make_st(),
+        // 3. Two pairs of position acks at the destination tile. Per real-client
+        //    capture (path_debug.log), every walking step ends with mP + PAoP×2 +
+        //    PAiP×2. Without these the server treats the move as a teleport
+        //    (KErr ER=7).
+        make_portal_arrive_on(map_x, map_y),
+        make_portal_arrive_in(map_x, map_y),
+        make_portal_arrive_on(map_x, map_y),
+        make_portal_arrive_in(map_x, map_y),
     ]
 }
 
